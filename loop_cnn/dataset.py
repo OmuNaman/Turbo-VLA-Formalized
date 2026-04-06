@@ -212,7 +212,10 @@ class LoopEpisodeDataset(Dataset):
             for frame_idx, action in enumerate(actions):
                 self.samples.append(SampleIndex(episode_idx=episode_idx, frame_idx=frame_idx))
                 self.sample_weights.append(self._compute_sample_weight(action))
-        self.cache = _EpisodeCache(image_size=image_size, max_items=cache_size)
+        effective_cache_size = cache_size
+        if self.records and len(self.records) <= 64:
+            effective_cache_size = max(cache_size, len(self.records))
+        self.cache = _EpisodeCache(image_size=image_size, max_items=effective_cache_size)
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -281,6 +284,22 @@ class LoopEpisodeDataset(Dataset):
         if abs(vy) > 0.05 or abs(omega) > 0.05:
             return 1.2
         return 0.8
+
+    @property
+    def total_frames(self) -> int:
+        """Total frame count represented by this dataset split."""
+        return sum(record.num_frames for record in self.records)
+
+    @property
+    def estimated_cache_bytes(self) -> int:
+        """Approximate bytes needed to cache the resized RGB frames."""
+        width, height = self.image_size
+        return self.total_frames * width * height * 3
+
+    def preload_all(self) -> None:
+        """Decode and cache every episode once up front."""
+        for record in self.records:
+            self.cache.get(record)
 
 
 def build_datasets(

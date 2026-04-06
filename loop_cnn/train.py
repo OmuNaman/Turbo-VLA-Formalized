@@ -148,6 +148,18 @@ def build_loaders(
     if len(train_dataset) == 0:
         raise RuntimeError(f"No CNN episodes found under {episodes_dir}")
 
+    preload_threshold_frames = 25000
+    preload_threshold_records = 64
+    if train_dataset.records and len(train_dataset.records) <= preload_threshold_records and train_dataset.total_frames <= preload_threshold_frames:
+        estimated_gb = train_dataset.estimated_cache_bytes / (1024 ** 3)
+        print(
+            f"[train] Preloading {len(train_dataset.records)} train episodes into RAM "
+            f"(~{estimated_gb:.2f} GB resized frames) to avoid repeated video decode."
+        )
+        train_dataset.preload_all()
+        if len(val_dataset.records) > 0:
+            val_dataset.preload_all()
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -159,6 +171,7 @@ def build_loaders(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=torch.cuda.is_available(),
+        persistent_workers=num_workers > 0,
     )
     val_loader = None
     if len(val_dataset) > 0:
@@ -168,6 +181,7 @@ def build_loaders(
             shuffle=False,
             num_workers=num_workers,
             pin_memory=torch.cuda.is_available(),
+            persistent_workers=num_workers > 0,
         )
     train_sessions = sorted({record.session_name for record in train_dataset.records})
     val_sessions = sorted({record.session_name for record in val_dataset.records})
