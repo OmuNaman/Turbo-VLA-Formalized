@@ -1,9 +1,12 @@
-"""Main recording session orchestrator for the 10 Hz teleop loop."""
+"""Language-intent CNN recording session."""
+
+from __future__ import annotations
 
 import json
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 
@@ -35,8 +38,8 @@ def _flush_stdin() -> None:
             pass
 
 
-class RecordingSession:
-    """Orchestrates the full recording session."""
+class CNNLanguageSession:
+    """Record language-conditioned CNN demonstrations."""
 
     def __init__(self, config: RecordingConfig, tasks: TaskManager | None = None):
         self.config = config
@@ -80,10 +83,10 @@ class RecordingSession:
         self._write_session_info()
 
     def run(self) -> None:
-        """Main recording loop that records episodes until stopped."""
+        """Main loop that records one task-conditioned episode at a time."""
         print()
         print("=" * 50)
-        print("  TurboPi VLA Recording Session")
+        print("  TurboPi CNN Language Recording Session")
         print("=" * 50)
 
         print("\n  Connecting to robot...")
@@ -170,6 +173,11 @@ class RecordingSession:
             "teleop_speed": self.config.teleop_speed,
             "vcodec": self.config.vcodec,
             "tasks": self.tasks.tasks,
+            "mode_family": "cnn",
+            "intent_mode": "language",
+            "task_type": "instruction_conditioned_path_following",
+            "episode_definition": "one_instruction_one_demo_manual_accept",
+            "collection_style": "clean_demo",
             "observation_state_semantics": "previous_action_normalized",
             "action_semantics": "current_action_normalized",
             "accepted_episode_timestamps": "episode_relative_seconds",
@@ -194,7 +202,7 @@ class RecordingSession:
                 json.dump(session_info, handle, indent=2)
 
     def _select_task(self) -> tuple[str, int]:
-        """Prompt the user to select a task."""
+        """Prompt the user to select the instruction for this episode."""
         self.tasks.print_tasks()
         time.sleep(0.3)
         _flush_stdin()
@@ -257,7 +265,7 @@ class RecordingSession:
         print("\r" + " " * 60 + "\r", end="")
 
     def _record_episode(self, task: str, task_index: int) -> bool:
-        """Record a single episode at target FPS."""
+        """Record one task-conditioned episode and save metadata."""
         self.episodes.start_episode(task, task_index)
         self.fps_reg.reset()
         self.teleop.clear_events()
@@ -327,8 +335,7 @@ class RecordingSession:
             print(
                 f"\r  REC {elapsed:5.1f}s  frames={frame_count}  "
                 f"fps={fps_str}  speed={self.teleop.speed:.0f}%   ",
-                end="",
-                flush=True,
+                end="", flush=True
             )
 
         self.client.stop()
@@ -351,12 +358,30 @@ class RecordingSession:
             return False
 
         episode = self.episodes.accept_episode()
-        self.episode_writer.save_episode(episode)
+        episode_dir = self.episode_writer.save_episode(episode)
+        self._write_episode_info(episode_dir=episode_dir, task=task, task_index=task_index, episode=episode)
         print(
             f"  ok Episode {ep_idx} accepted "
             f"({frame_count} frames, {frame_count / self.config.fps:.1f}s)\n"
         )
         return True
+
+    def _write_episode_info(self, episode_dir: Path, task: str, task_index: int, episode) -> None:
+        """Save language-intent episode metadata beside saved media."""
+        info = {
+            "episode_index": episode.episode_index,
+            "mode_family": "cnn",
+            "intent_mode": "language",
+            "task_type": "instruction_conditioned_path_following",
+            "episode_definition": "one_instruction_one_demo_manual_accept",
+            "collection_style": "clean_demo",
+            "task_name": task,
+            "task_index": task_index,
+            "num_frames": len(episode.frames),
+            "duration_s": len(episode.frames) / self.config.fps,
+        }
+        with (episode_dir / "episode_info.json").open("w", encoding="utf-8") as handle:
+            json.dump(info, handle, indent=2)
 
     def _check_health(self) -> None:
         """Run a periodic robot health check without blocking the control loop."""

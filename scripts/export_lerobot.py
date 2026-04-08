@@ -34,7 +34,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--state-source",
         choices=sorted(STATE_SOURCE_CHOICES),
         default=defaults.state_source,
-        help="How to populate observation.state in the exported dataset.",
+        help=(
+            "How to populate observation.state in the exported dataset. "
+            "'shifted_action' is the safest default for older sessions; "
+            "'recorded' now rejects obviously leaky same-step state labels."
+        ),
     )
     parser.add_argument("--vcodec", default=defaults.vcodec)
     parser.add_argument("--overwrite", action="store_true")

@@ -40,6 +40,7 @@ class RecordingConfig:
 
     # Paths
     data_dir: Path = field(default_factory=lambda: Path("data"))
+    session_name: str | None = None
 
     # Video encoding
     vcodec: str = "h264"

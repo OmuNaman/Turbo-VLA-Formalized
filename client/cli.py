@@ -14,12 +14,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Dataset name for the VLA recorder")
     parser.add_argument("--cnn-dataset", default="turbopi_cnn",
                         help="Dataset name for the CNN recorder")
+    parser.add_argument("--intent-cnn-dataset", default="turbopi_intent_cnn",
+                        help="Dataset name for the language-intent CNN recorder")
     parser.add_argument("--repo-id", default="<HF_DATASET_REPO>")
     parser.add_argument("--fps", type=int, default=10)
     parser.add_argument("--episodes", type=int, default=50)
     parser.add_argument("--episode-time", type=float, default=30.0)
     parser.add_argument("--speed", type=float, default=50.0)
     parser.add_argument("--data-dir", default="data")
+    parser.add_argument("--session-name", default=None,
+                        help="Resume or force a specific session folder name under the chosen dataset")
     parser.add_argument("--tasks", nargs="+", default=None,
                         help="Custom VLA task list (overrides defaults)")
     parser.add_argument("--mode", choices=["launcher", "cnn", "vla"], default="launcher")

@@ -28,6 +28,7 @@ class RawWriter:
         self._stream = None
         self._telemetry_file = None
         self._frame_count = 0
+        self._session_frames_before_start = 0
         self._lock = threading.Lock()
         self._flush_interval = 10
         self._video_enabled = av is not None
@@ -44,7 +45,42 @@ class RawWriter:
             print("[RawWriter] WARNING: PyAV not installed, skipping raw session video backup")
             print("  Install with: pip install av")
 
-        self._telemetry_file = open(self._telemetry_path, "w", encoding="utf-8")
+        self._prepare_resume_outputs()
+        mode = "a" if self._telemetry_path.exists() else "w"
+        self._telemetry_file = open(self._telemetry_path, mode, encoding="utf-8")
+
+    def _prepare_resume_outputs(self) -> None:
+        """Reuse the same raw folder without overwriting prior files."""
+        telemetry_path = self.session_dir / "telemetry.jsonl"
+        self._telemetry_path = telemetry_path
+        if telemetry_path.exists():
+            self._session_frames_before_start = self._count_existing_telemetry_frames(telemetry_path)
+            self._frame_count = self._session_frames_before_start
+        else:
+            self._session_frames_before_start = 0
+            self._frame_count = 0
+
+        base_video_path = self.session_dir / "video.mp4"
+        if not base_video_path.exists():
+            self._video_path = base_video_path
+            return
+
+        part_index = 2
+        while True:
+            candidate = self.session_dir / f"video_part{part_index:03d}.mp4"
+            if not candidate.exists():
+                self._video_path = candidate
+                return
+            part_index += 1
+
+    def _count_existing_telemetry_frames(self, telemetry_path: Path) -> int:
+        """Count existing telemetry rows so resumed frame indices stay monotonic."""
+        count = 0
+        with telemetry_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    count += 1
+        return count
 
     def write_frame(
         self,
@@ -134,7 +170,14 @@ class RawWriter:
                 self._telemetry_file = None
 
         if self._frame_count > 0:
-            print(f"  [RawWriter] Saved {self._frame_count} frames to {self.session_dir}")
+            new_frames = self._frame_count - self._session_frames_before_start
+            if self._session_frames_before_start > 0:
+                print(
+                    f"  [RawWriter] Saved {new_frames} new frames "
+                    f"({self._frame_count} total) to {self.session_dir}"
+                )
+            else:
+                print(f"  [RawWriter] Saved {self._frame_count} frames to {self.session_dir}")
 
     @property
     def frame_count(self) -> int:

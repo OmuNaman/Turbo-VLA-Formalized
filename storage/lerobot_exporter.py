@@ -93,6 +93,8 @@ def export_lerobot_dataset(
     try:
         for episode_dir in episode_dirs:
             rows = load_episode_rows(episode_dir)
+            if state_source == "recorded":
+                validate_recorded_state_rows(rows, episode_dir)
             frames = first_episode_frames if episode_dir == episode_dirs[0] else decode_video_frames(
                 episode_dir / "video.mp4"
             )
@@ -213,6 +215,48 @@ def as_float32_vector(value, column_name: str) -> np.ndarray:
     if array.shape != (3,):
         raise ValueError(f"Expected a 3D vector in column '{column_name}', got shape {array.shape}")
     return array
+
+
+def validate_recorded_state_rows(
+    rows: list[dict],
+    episode_dir: Path,
+    *,
+    tolerance: float = 1e-5,
+    min_action_changes: int = 3,
+) -> None:
+    """Refuse obviously leaky same-step state labels when recorded state is requested.
+
+    Modern sessions store observation.state as the previous normalized action. Older buggy
+    sessions may instead store the current action label, which leaks the answer into the
+    model input. This check intentionally only trips on strong evidence of that old bug.
+    """
+    if not rows:
+        return
+    if STATE_COLUMN not in rows[0]:
+        raise ValueError(
+            f"State source 'recorded' was requested, but '{STATE_COLUMN}' is missing from {episode_dir / 'data.parquet'}."
+        )
+    if len(rows) <= 1:
+        return
+
+    actions = np.asarray([as_float32_vector(row[ACTION_COLUMN], ACTION_COLUMN) for row in rows], dtype=np.float32)
+    states = np.asarray([as_float32_vector(row[STATE_COLUMN], STATE_COLUMN) for row in rows], dtype=np.float32)
+
+    # If the action almost never changes, both same-step and shifted views can look identical.
+    action_change = np.abs(actions[1:] - actions[:-1]).max(axis=1)
+    if int((action_change > tolerance).sum()) < min_action_changes:
+        return
+
+    same_step_ratio = float((np.abs(states - actions).max(axis=1) <= tolerance).mean())
+    shifted_ratio = float((np.abs(states[1:] - actions[:-1]).max(axis=1) <= tolerance).mean())
+
+    if same_step_ratio >= 0.98 and same_step_ratio > shifted_ratio + 0.1:
+        raise ValueError(
+            "Recorded observation.state appears to match the same-step action labels in "
+            f"{episode_dir}, which would leak the target during training "
+            f"(same_step_match_ratio={same_step_ratio:.3f}, shifted_match_ratio={shifted_ratio:.3f}). "
+            "Export again with --state-source shifted_action."
+        )
 
 
 def build_state_vector(row: dict, state_source: str, previous_action: np.ndarray) -> np.ndarray | None:

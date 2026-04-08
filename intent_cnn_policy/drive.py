@@ -1,4 +1,4 @@
-"""Autonomous laptop-first driver for the TurboPi CNN policy."""
+"""Autonomous driver for the task-conditioned TurboPi CNN policy."""
 
 from __future__ import annotations
 
@@ -20,10 +20,12 @@ from .train import resolve_device
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Drive TurboPi using a trained CNN policy")
+    parser = argparse.ArgumentParser(description="Drive TurboPi using a trained task-conditioned CNN policy")
     parser.add_argument("--robot-ip", default="192.168.149.1")
     parser.add_argument("--robot-port", type=int, default=8080)
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--task-index", type=int, default=None)
+    parser.add_argument("--task", default=None, help="Task string to condition on")
     parser.add_argument("--loop-hz", type=float, default=10.0)
     parser.add_argument("--smoothing", type=float, default=0.65, help="EMA factor for previous action")
     parser.add_argument("--vx-cap", type=float, default=35.0)
@@ -75,12 +77,46 @@ def frame_to_tensor(frame: np.ndarray, *, image_width: int, image_height: int) -
     return TF.to_tensor(image)
 
 
+def resolve_task_selection(task_names: list[str], task_name: str | None, task_index: int | None) -> tuple[int, str]:
+    """Resolve the requested task string/index to a stable task id."""
+    if task_name is not None:
+        if task_name not in task_names:
+            raise ValueError(f"Unknown task '{task_name}'. Available: {task_names}")
+        return task_names.index(task_name), task_name
+
+    if task_index is not None:
+        if not 0 <= task_index < len(task_names):
+            raise ValueError(f"Task index {task_index} out of range 0-{len(task_names) - 1}")
+        return task_index, task_names[task_index]
+
+    if not task_names:
+        raise ValueError("No task vocabulary was found in the checkpoint. Pass --task-index explicitly.")
+
+    print("\n  Available tasks:")
+    for index, name in enumerate(task_names):
+        print(f"    [{index}] {name}")
+    print()
+    while True:
+        try:
+            choice = input("  Select task number: ").strip()
+            index = int(choice)
+        except ValueError:
+            print("  Enter a number.")
+            continue
+        if 0 <= index < len(task_names):
+            return index, task_names[index]
+        print(f"  Invalid. Choose 0-{len(task_names) - 1}")
+
+
 def main() -> None:
     args = build_parser().parse_args()
     device = resolve_device(args.device)
     model, payload = load_checkpoint(Path(args.checkpoint), map_location=device)
     model = model.to(device)
     model.eval()
+
+    task_names = list(payload.get("extra", {}).get("task_names") or [])
+    task_index, task_name = resolve_task_selection(task_names, args.task, args.task_index)
 
     image_width = int(model.config.image_width)
     image_height = int(model.config.image_height)
@@ -100,11 +136,12 @@ def main() -> None:
 
     print()
     print("=" * 50)
-    print("  TurboPi CNN Drive")
+    print("  TurboPi Intent CNN Drive")
     print("=" * 50)
     print(f"  Robot: {robot_url}")
     print(f"  Device: {device}")
     print(f"  Checkpoint epoch: {payload.get('epoch')}")
+    print(f"  Task: {task_name} [{task_index}]")
     print(f"  Battery: {health.get('battery_mv', '?')}mV")
     print(f"  Camera: {'OK' if health.get('camera_ok') else 'FAIL'}")
     print()
@@ -113,6 +150,7 @@ def main() -> None:
 
     buffer: collections.deque[np.ndarray] = collections.deque(maxlen=frame_history)
     previous_action = np.zeros(3, dtype=np.float32)
+    task_tensor = torch.tensor([task_index], dtype=torch.long, device=device)
 
     def safe_stop(*_args):
         try:
@@ -143,7 +181,7 @@ def main() -> None:
             ).reshape(1, frame_history * 3, image_height, image_width)
 
             with torch.no_grad():
-                pred = model(stacked.to(device)).squeeze(0).detach().cpu().numpy().astype(np.float32)
+                pred = model(stacked.to(device), task_tensor).squeeze(0).detach().cpu().numpy().astype(np.float32)
 
             smoothed = smooth_alpha * previous_action + (1.0 - smooth_alpha) * np.clip(pred, -1.0, 1.0)
             raw_action = denormalize_action(smoothed, args.vx_cap, args.vy_cap, args.omega_cap)
@@ -163,7 +201,7 @@ def main() -> None:
                 break
 
             print(
-                f"\r  pred=[{pred[0]:5.2f},{pred[1]:5.2f},{pred[2]:5.2f}] "
+                f"\r  task={task_index:02d} pred=[{pred[0]:5.2f},{pred[1]:5.2f},{pred[2]:5.2f}] "
                 f"cmd=[{safe_action[0]:6.2f},{safe_action[1]:6.2f},{safe_action[2]:6.2f}]   ",
                 end="",
                 flush=True,
@@ -181,7 +219,7 @@ def main() -> None:
             client.stop()
         except Exception:
             pass
-        print("  Loop drive stopped.")
+        print("  Intent CNN drive stopped.")
 
 
 if __name__ == "__main__":

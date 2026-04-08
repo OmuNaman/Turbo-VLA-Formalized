@@ -5,6 +5,13 @@ from __future__ import annotations
 from argparse import Namespace
 from pathlib import Path
 
+DEFAULT_INTENT_CNN_TASKS = [
+    "go left",
+    "go right",
+    "go forward",
+    "go backward",
+]
+
 
 def _run_cnn_language_placeholder() -> None:
     """Show the language-intent placeholder screen."""
@@ -12,8 +19,7 @@ def _run_cnn_language_placeholder() -> None:
     print("=" * 50)
     print("  CNN With Language Intent")
     print("=" * 50)
-    print("\n  This path is coming in the future.")
-    print("  For now, use CNN-based -> without language intent -> dataset recording.\n")
+    print("\n  This path now records language-conditioned CNN demonstrations.\n")
 
 
 def _run_cnn_dataset_recording(args: Namespace) -> None:
@@ -33,8 +39,36 @@ def _run_cnn_dataset_recording(args: Namespace) -> None:
         episode_time_s=episode_time,
         teleop_speed=args.speed,
         data_dir=Path(args.data_dir),
+        session_name=args.session_name,
     )
     session = CNNLoopSession(config)
+    session.run()
+
+
+def _run_cnn_language_recording(args: Namespace) -> None:
+    """Run the language-conditioned CNN recorder."""
+    from config import RecordingConfig
+
+    from tasks import TaskManager
+
+    from .cnn_language_session import CNNLanguageSession
+
+    dataset_name = getattr(args, "intent_cnn_dataset", None) or args.cnn_dataset
+    episode_time = args.episode_time if args.episode_time != 30.0 else 60.0
+    config = RecordingConfig(
+        robot_ip=args.robot_ip,
+        robot_port=args.robot_port,
+        dataset_name=dataset_name,
+        repo_id=args.repo_id,
+        fps=args.fps,
+        num_episodes=args.episodes,
+        episode_time_s=episode_time,
+        teleop_speed=args.speed,
+        data_dir=Path(args.data_dir),
+        session_name=args.session_name,
+    )
+    tasks = TaskManager(args.tasks if args.tasks else DEFAULT_INTENT_CNN_TASKS)
+    session = CNNLanguageSession(config, tasks)
     session.run()
 
 
@@ -50,7 +84,7 @@ def run_from_args(args: Namespace, prompt_menu) -> None:
         args.cnn_intent = "language" if selection == 0 else "no-language"
 
     if args.cnn_intent == "language":
-        _run_cnn_language_placeholder()
+        _run_cnn_language_recording(args)
         return
 
     if args.cnn_task is None:

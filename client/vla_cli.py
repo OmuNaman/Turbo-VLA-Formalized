@@ -23,9 +23,9 @@ def run_from_args(args: Namespace) -> None:
         episode_time_s=args.episode_time,
         teleop_speed=args.speed,
         data_dir=Path(args.data_dir),
+        session_name=args.session_name,
     )
 
     tasks = TaskManager(args.tasks if args.tasks else DEFAULT_TASKS)
     session = RecordingSession(config, tasks)
     session.run()
-

@@ -17,6 +17,7 @@ from timing import FPSRegulator
 
 from .episode_manager import EpisodeManager
 from .robot_client import RobotClient
+from .session_state import inspect_saved_session
 from .teleop_controller import TeleopController
 
 
@@ -58,10 +59,14 @@ class CNNLoopSession:
             speed=config.teleop_speed,
             max_speed=config.max_duty,
         )
-        self.episodes = EpisodeManager()
+        self.session_name = config.session_name or datetime.now().strftime("session_%Y%m%d_%H%M%S")
+        self.resume_state = inspect_saved_session(config.episodes_dir / self.session_name)
+        self.episodes = EpisodeManager(
+            start_episode_index=self.resume_state.next_episode_index,
+            accepted_count=self.resume_state.accepted_count,
+            total_frames=self.resume_state.total_frames,
+        )
         self.fps_reg = FPSRegulator(target_fps=config.fps)
-
-        self.session_name = datetime.now().strftime("session_%Y%m%d_%H%M%S")
         self.allowed_directions = [item[0] for item in DIRECTION_OPTIONS]
         self.task_names = [item[1] for item in DIRECTION_OPTIONS]
 
@@ -100,6 +105,12 @@ class CNNLoopSession:
             f"  Connected! Battery: {health.get('battery_mv', '?')}mV, "
             f"Camera: {'OK' if health.get('camera_ok') else 'FAIL'}"
         )
+        if self.resume_state.accepted_count > 0:
+            print(
+                f"  Resuming session {self.session_name}: "
+                f"{self.resume_state.accepted_count} accepted episodes, "
+                f"{self.resume_state.total_frames} frames already saved"
+            )
 
         if not self.episode_writer.video_available:
             print("  ERROR: PyAV is required to save accepted episodes as MP4.")
@@ -157,8 +168,10 @@ class CNNLoopSession:
 
     def _write_session_info(self) -> None:
         """Persist session-level metadata beside raw and accepted outputs."""
+        now = datetime.now().isoformat(timespec="seconds")
         session_info = {
-            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "created_at": now,
+            "last_updated_at": now,
             "session_name": self.session_name,
             "dataset_name": self.config.dataset_name,
             "robot_url": self.config.robot_url,
@@ -185,6 +198,16 @@ class CNNLoopSession:
             session_dir = base_dir / self.session_name
             session_dir.mkdir(parents=True, exist_ok=True)
             path = session_dir / "session_info.json"
+            if path.exists():
+                try:
+                    with path.open("r", encoding="utf-8") as handle:
+                        existing = json.load(handle)
+                    session_info["created_at"] = existing.get("created_at", session_info["created_at"])
+                    session_info["resume_count"] = int(existing.get("resume_count", 0)) + 1
+                except Exception:
+                    session_info["resume_count"] = 1
+            else:
+                session_info["resume_count"] = 0
             with path.open("w", encoding="utf-8") as handle:
                 json.dump(session_info, handle, indent=2)
 
