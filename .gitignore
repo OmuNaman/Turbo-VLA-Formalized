@@ -12,6 +12,12 @@ env/
 data/
 *.log
 runs/
+outputs/
+temp/
+downloaded_ckpt/
+turbopi_smolvla_intent_5k_pretrained_model/
+best.pt
+*.tar.gz
 
 # Tool caches
 .pytest_cache/
@@ -24,3 +30,6 @@ runs/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local design and notebook-style artifacts
+design/

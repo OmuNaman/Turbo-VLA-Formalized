@@ -119,9 +119,14 @@ def discover_sessions(episodes_root: Path) -> list[SessionSummary]:
             if info_path.exists():
                 try:
                     info = json.loads(info_path.read_text(encoding="utf-8"))
-                    direction = str(info.get("direction", "")).strip()
-                    if direction:
-                        directions.append(direction)
+                    label = str(
+                        info.get("direction")
+                        or info.get("task_name")
+                        or info.get("task")
+                        or ""
+                    ).strip()
+                    if label:
+                        directions.append(label)
                 except json.JSONDecodeError:
                     pass
 

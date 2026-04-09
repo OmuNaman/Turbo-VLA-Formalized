@@ -73,16 +73,26 @@ Check these first:
 - make sure battery voltage is healthy
 - make sure the server was not dropping camera frames
 
-The recorder now skips frames when motor commands fail instead of silently saving mismatched labels, but unstable Wi-Fi can still reduce collection quality.
+The recorder skips frames when motor commands fail instead of silently saving mismatched labels, but unstable Wi-Fi can still reduce collection quality.
 
-## The CNN trainer says it is using only one session
+## The Intent-CNN trainer says it is using only one session
 
 That warning means training can still run, but true validation is skipped because there is only one recording session available.
 
 Fix:
 
-- collect at least one more `session_YYYYMMDD_HHMMSS` under `data/turbopi_cnn/episodes/`
-- then train from the full CNN episodes root instead of one specific session folder
+- collect at least one more `session_YYYYMMDD_HHMMSS` under `data/turbopi_intent_cnn/episodes/`
+- then train from the full Intent-CNN episodes root instead of one specific session folder
+
+## `intent_cnn_policy.drive` says the task is unknown
+
+That checkpoint only knows the task strings that were present in its training data.
+
+Fixes:
+
+- pass a task string that really appears in the dataset used for that checkpoint
+- inspect the checkpoint metadata or training summary to confirm the saved task vocabulary
+- retrain if you need a newly added custom task to be supported
 
 ## LeRobot export fails
 
@@ -113,6 +123,37 @@ If export succeeds but the console looks noisy:
 - `torchcodec is not available ... falling back to pyav` is a fallback warning, not a failed export
 - LeRobot may store exported frames in one chunked video file, so the visible video length is based on accepted frames at the dataset FPS
 
+## `smolvla_policy.drive` says the checkpoint is incomplete or corrupted
+
+That usually means the copied `pretrained_model/model.safetensors` file was truncated during download or transfer.
+
+Fixes:
+
+- re-copy the full `pretrained_model/` folder from the training machine
+- avoid partial browser downloads for multi-GB model files
+- verify the local file size before trying again
+
+## `smolvla_policy.drive` loads but the robot barely moves
+
+Common causes:
+
+- `vx-cap` or `omega-cap` are too low
+- smoothing is too high for the robot to react quickly
+- the task prompt is valid, but the model still learned a weak command scale from the dataset
+
+Typical tuning knobs:
+
+- increase `--vx-cap`
+- increase `--omega-cap`
+- reduce `--smoothing`
+- keep `--min-vy 0` unless you really want forced sideways motion
+
+## `torchcodec is not available ... falling back to pyav`
+
+That warning is noisy but usually harmless.
+
+It means LeRobot or the local decoder is using PyAV instead of TorchCodec on your platform.
+
 ## The robot returns to hotspot mode after reboot
 
 That usually means the shared Wi-Fi settings were temporary or the persistent configuration is not correct yet.
@@ -123,6 +164,16 @@ Fix:
 2. SSH to `192.168.149.1`.
 3. Re-run the `nmcli` connection.
 4. Update `~/hiwonder-toolbox/wifi_conf.py` so shared Wi-Fi is the saved default.
+
+## Windows says the full client or drive loop behaves strangely inside SSH
+
+Run the laptop-side tools from the local desktop session, not from a remote SSH shell.
+
+That especially matters for:
+
+- keyboard teleop
+- live drive loops
+- local camera/inference debugging
 
 ## Battery and power notes
 

@@ -1,8 +1,9 @@
 # Getting Started
 
-This guide gets a student from "fresh clone" to "recording data" and then to either "trained CNN policy" or "exported LeRobot dataset."
+This guide gets a student from fresh clone to either:
 
-If you are working on the separate CNN workflow, use [CNN Dataset And Training Guide](cnn.md) and [CNN V1 Overview](../design/cnn_v1/overview.html) alongside this page.
+- a trained `intent_cnn_policy` checkpoint
+- or an exported LeRobot dataset ready for SmolVLA fine-tuning
 
 ## What You Need
 
@@ -29,8 +30,6 @@ source .venv/bin/activate
 pip install -r requirements-laptop.txt
 ```
 
-The laptop requirements cover the recording client and local dataset writing.
-
 ## Install Robot Dependencies
 
 On the TurboPi:
@@ -43,9 +42,9 @@ Important:
 
 - `ros_robot_controller_sdk` is not installed from `pip`
 - `cv2` is usually already present on the TurboPi image
-- this repo assumes you are using the normal TurboPi software image, not a clean Raspberry Pi install
+- this repo assumes the normal TurboPi software image, not a clean Raspberry Pi install
 
-If you prefer to do that from your laptop, use:
+From the laptop instead:
 
 ```bash
 bash scripts/deploy_server.sh deps
@@ -58,9 +57,9 @@ bash scripts/deploy_server.sh deps
 3. Start the robot server.
 4. Optionally test teleop-only mode.
 5. Start the laptop launcher.
-6. Choose `VLA-based` or `CNN-based`.
+6. Choose either the intent-conditioned CNN workflow or the VLA recording workflow.
 7. Record accepted episodes.
-8. Train the CNN model or export VLA episodes to LeRobot.
+8. Train `intent_cnn_policy` or export VLA episodes to LeRobot.
 
 ## Start the Robot Server
 
@@ -70,7 +69,7 @@ If the repo is already on the robot:
 python3 robot_server/server.py --port 8080
 ```
 
-If the repo only exists on your laptop, use the deploy helper from a Bash shell:
+If the repo only exists on your laptop:
 
 ```bash
 bash scripts/deploy_server.sh start
@@ -80,15 +79,13 @@ Windows users can run that from Git Bash or WSL.
 
 ## Start the Laptop Client
 
-If you want to confirm the robot responds before recording:
+Quick teleop-only test:
 
 ```bash
 python -m client.teleop --robot-ip <ROBOT_IP>
 ```
 
-Then start the launcher:
-
-Shared-Wi-Fi mode:
+Start the launcher:
 
 ```bash
 python -m client.cli --robot-ip <ROBOT_IP>
@@ -102,10 +99,29 @@ python -m client
 
 `python -m client` uses the default AP-mode robot IP `192.168.149.1`. Once you move to shared Wi-Fi, pass `--robot-ip <ROBOT_IP>` explicitly.
 
-The launcher then asks which workflow you want:
+The launcher then offers:
 
-- `CNN-based`: image-only CNN dataset recording
-- `VLA-based`: the original task-based dataset flow
+- `CNN-based`
+- `VLA-based`
+
+Inside `CNN-based`, choose:
+
+- `intent-conditioned (recommended)`
+
+## Recording Tasks
+
+The VLA recorder and the intent-conditioned CNN recorder both support:
+
+- the built-in task list
+- one extra menu item: `Custom task...`
+
+If a student chooses `Custom task...`, the typed task:
+
+- is appended to the current session task list
+- gets a session-local `task_index`
+- is saved into `tasks.json`, `session_info.json`, `episode_info.json`, `data.parquet`, and raw telemetry
+
+That means students can mix built-in tasks and one-off tasks without changing `tasks.py` first.
 
 ## Where Recordings Are Saved
 
@@ -120,50 +136,56 @@ data/<dataset_name>/
 Example:
 
 ```text
-data/turbopi_nav/
+data/turbopi_intent_cnn/
 |-- raw/session_20260401_101500/
 `-- episodes/session_20260401_101500/
 ```
 
 Each run gets its own `session_YYYYMMDD_HHMMSS` folder, so old recordings stay untouched.
 
-## Train The CNN Policy
+## Train the Intent-CNN Policy
 
-Install the training extras on the laptop:
+Install the CNN training extras on the laptop:
 
 ```bash
 pip install -r requirements-cnn.txt
 ```
 
-Train from the CNN episode root:
+Train from the intent-conditioned episodes root:
 
 ```bash
-python -m cnn_policy.train \
-  --episodes-dir data/turbopi_cnn/episodes \
-  --run-dir runs/cnn_v1
+python -m intent_cnn_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --run-dir runs/intent_cnn_v1
 ```
 
-The `--run-dir` value is a base directory. Each training launch creates a fresh timestamped child run so older checkpoints stay untouched.
+The `--run-dir` value is a base directory. Each training launch creates a fresh timestamped child run.
 
-Evaluate a trained checkpoint:
+Evaluate:
 
 ```bash
-python -m cnn_policy.eval \
-  --episodes-dir data/turbopi_cnn/episodes \
+python -m intent_cnn_policy.eval \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
   --checkpoint <RUN_DIR>/checkpoints/best.pt
 ```
 
-Drive the robot using the trained checkpoint:
+Drive:
 
 ```bash
-python -m cnn_policy.drive \
+python -m intent_cnn_policy.drive \
   --robot-ip <ROBOT_IP> \
-  --checkpoint <RUN_DIR>/checkpoints/best.pt
+  --checkpoint <RUN_DIR>/checkpoints/best.pt \
+  --task "go left"
 ```
 
-## Export To LeRobot
+Important:
 
-Install the export extras on the laptop:
+- the checkpoint only knows tasks that appeared in its training data
+- if you record custom tasks, those custom strings become valid inference labels for that checkpoint
+
+## Export to LeRobot
+
+Install the export extras:
 
 ```bash
 pip install -r requirements-export.txt
@@ -178,22 +200,14 @@ python scripts/export_lerobot.py \
   --repo-id <HF_DATASET_REPO>
 ```
 
-What the exporter does:
-
-- scans all accepted `episode_*` folders under `episodes/`
-- decodes each saved `video.mp4`
-- reads each `data.parquet`
-- rebuilds a LeRobot dataset under `data/<dataset_name>/lerobot/`
-
-The default `--state-source shifted_action` is important. It reconstructs `observation.state` from the previous action so older recordings are still safe to use for training.
+The default `--state-source shifted_action` reconstructs `observation.state` from the previous action and is the safest choice for older recordings.
 
 Helpful notes:
 
-- `--episodes-dir` can be the full `data/turbopi_nav/episodes` folder or one specific `session_YYYYMMDD_HHMMSS` folder.
-- The exporter includes every accepted `episode_*` folder under that path.
-- If one episode is clearly bad, delete that episode folder before exporting.
-- LeRobot often stores exported frames as chunked dataset videos rather than one MP4 per episode.
-- If the packed video looks shorter than your full teleop session, that is expected. The duration is based only on accepted frames at the exported FPS.
+- `--episodes-dir` can be the full episodes root or one specific `session_YYYYMMDD_HHMMSS` folder
+- the exporter includes every accepted `episode_*` folder under that path
+- if one episode is clearly bad, delete that episode folder before exporting
+- LeRobot often stores exported frames as chunked dataset videos rather than one MP4 per episode
 
 ## Useful Flags
 
@@ -209,10 +223,10 @@ Different VLA dataset name:
 python -m client.cli --robot-ip <ROBOT_IP> --dataset classroom_nav
 ```
 
-Different CNN dataset name:
+Different intent-CNN dataset name:
 
 ```bash
-python -m client.cli --robot-ip <ROBOT_IP> --cnn-dataset classroom_cnn
+python -m client.cli --robot-ip <ROBOT_IP> --intent-cnn-dataset classroom_intent_cnn
 ```
 
 Show export options:
@@ -221,6 +235,6 @@ Show export options:
 python scripts/export_lerobot.py --help
 ```
 
-## Change the Default Tasks
+## Change the Built-In Tasks
 
-The built-in task list lives in `tasks.py`. Edit `DEFAULT_TASKS` to match your classroom task setup before you record.
+The built-in task list lives in `tasks.py`. Edit `DEFAULT_TASKS` if you want a different classroom default, but students can now also create one-off tasks during recording without modifying the code first.

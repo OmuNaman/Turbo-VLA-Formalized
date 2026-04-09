@@ -1,85 +1,48 @@
-# CNN Dataset And Training Guide
+# Intent-CNN Guide
 
-This guide describes the CNN-based, no-language workflow that sits beside the existing VLA recorder. For the visual map, open [CNN V1 Overview](../design/cnn_v1/overview.html).
+This guide covers the official lightweight model path for the repo: `intent_cnn_policy`.
+
+It uses:
+
+- 3 recent RGB frames
+- a task label chosen during recording
+- a small CNN that regresses normalized `[vx, vy, omega]`
 
 ## What This Mode Is
 
-The CNN mode is for image-only path following. It is a good fit for taped tracks such as:
+Intent-CNN is a good fit for student projects where:
 
-- circles
-- squares
-- rounded rectangles
+- you want a fast local training loop
+- you want to condition behavior on a small set of task prompts such as `go left` or `go right`
+- you want to stay lighter-weight than a VLA
 
-In this flow:
+Important behavior:
 
-- `CNN-based` means image-only control, no task text, no language intent
-- `VLA-based` keeps the current task-driven recording flow
-- `dataset recording` is the CNN mode that records one full lap per accepted episode
+- the model is task-conditioned, but still closed-set
+- it does **not** do open-vocabulary language understanding
+- it can only drive using task strings that were present in the training data for that checkpoint
 
 ## Launcher Flow
 
 ```text
 python -m client.cli --robot-ip <ROBOT_IP>
   -> CNN-based
-  -> without language intent
-  -> dataset recording
+  -> intent-conditioned (recommended)
 ```
 
-The `with language intent` path is reserved for future work.
+During recording, students can either:
 
-## Recording Setup
+- pick one of the built-in tasks
+- or choose `Custom task...` and type a new task string
 
-Use a high-contrast taped path and keep the floor lighting stable.
-
-Good setup rules:
-
-- pick one tape color and keep it consistent
-- make the path wide enough that the robot can correct smoothly
-- avoid shiny floors and strong shadows if possible
-- keep the robot camera pointed at the path and close enough that the tape is easy to see
-
-## What One Episode Means
-
-For CNN mode, one episode equals one complete lap of your chosen track.
-
-Episode flow:
-
-1. Select the drive direction.
-2. Drive into the path.
-3. Press accept when the lap is complete.
-4. Save that lap as one episode.
-
-Do not mix multiple laps into one episode unless you intentionally want that for a later experiment.
-
-## Direction Labels
-
-Every CNN episode should be labeled with one of these directions:
-
-- `clockwise`
-- `counterclockwise`
-
-Keep both directions in the dataset. That usually makes the policy easier to debug and more stable in closed loop.
-
-## Recommended Dataset Size
-
-Start small and prove the path works first, then scale up.
-
-Suggested collection target:
-
-- smoke test: `20` accepted laps per direction
-- first serious dataset: `50` accepted laps per direction
-- strong v1 goal: `100` accepted laps total
-
-For square tracks, expect to add more episodes if the corners are still weak.
+That typed task is saved like any other task and becomes part of the session vocabulary.
 
 ## Data Layout
 
-CNN data should live in its own dataset root, separate from the VLA recordings.
-
-Example layout:
+Intent-CNN data should live in its own dataset root:
 
 ```text
-data/turbopi_cnn/
+data/turbopi_intent_cnn/
 |-- raw/
 |   `-- session_YYYYMMDD_HHMMSS/
 |       |-- session_info.json
@@ -91,19 +54,25 @@ data/turbopi_cnn/
         |-- tasks.json
         `-- episode_000000/
             |-- data.parquet
+            |-- episode_info.json
             `-- video.mp4
 ```
 
-If you already recorded under the older `data/turbopi_cnn_loop/` path, that older layout still works.
+Each accepted episode stores:
 
-## What The CNN Sees
+- `task`
+- `task_index`
+- `observation.state`
+- `action`
 
-The first baseline uses:
+## What the Model Sees
+
+The baseline uses:
 
 - 3 recent RGB frames
-- full-frame resize to `160x120`
-- a stacked input tensor shaped `9 x 120 x 160`
-- normalized pixels in `[0, 1]`
+- resize to `160x120`
+- stacked input tensor shaped `9 x 120 x 160`
+- one task id from the saved task vocabulary
 
 The network predicts:
 
@@ -113,9 +82,9 @@ The network predicts:
 
 Those values stay normalized and get converted back to robot command units only at inference time.
 
-## CNN Architecture
+## Architecture
 
-The first baseline is intentionally small:
+The model is intentionally small:
 
 ```text
 Input: 9 x 120 x 160
@@ -124,20 +93,18 @@ Conv 32 -> 64, k=3, s=2, p=1 + BN + ReLU
 Conv 64 -> 128, k=3, s=2, p=1 + BN + ReLU
 Conv 128 -> 128, k=3, s=2, p=1 + BN + ReLU
 Global Average Pool
-Linear 128 -> 64 + ReLU + Dropout
-Linear 64 -> 32 + ReLU
+Task embedding
+MLP head
 Linear 32 -> 3 + Tanh
 ```
 
 Why this shape:
 
-- it is small enough to run fast on a laptop in a tight control loop
-- it keeps the model easy to debug
-- it is strong enough for taped path following without jumping to a heavyweight backbone
+- it trains quickly on a laptop
+- it is easy to debug
+- it is strong enough for task-conditioned path following without jumping straight to a heavyweight model
 
-## Install The CNN Extras
-
-On the laptop:
+## Install the CNN Extras
 
 ```bash
 pip install -r requirements-cnn.txt
@@ -145,82 +112,75 @@ pip install -r requirements-cnn.txt
 
 ## Training Command
 
-Train from the accepted CNN episode root:
-
 ```bash
-python -m cnn_policy.train --episodes-dir data/turbopi_cnn/episodes --run-dir runs/cnn_v1
+python -m intent_cnn_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --run-dir runs/intent_cnn_v1
 ```
 
-The trainer prints a concrete child run such as `runs/cnn_v1/run_YYYYMMDD_HHMMSS`. Use that full folder as `<RUN_DIR>` for evaluation and driving.
+The trainer creates a timestamped child run such as `runs/intent_cnn_v1/run_YYYYMMDD_HHMMSS`.
 
 Training defaults:
 
 - Huber loss on normalized actions
 - session-level train/val split
-- light brightness, contrast, hue, blur, and small geometry augmentation
-- each launch creates a new timestamped run folder under the base `--run-dir`
-- each epoch saves its own folder under `checkpoints/epoch_XXX/` with both `last.pt` and `best.pt`
+- light brightness, contrast, hue, blur, and geometry augmentation
+- one timestamped run folder per launch
 
-## Evaluation Command
-
-```bash
-python -m cnn_policy.eval --episodes-dir data/turbopi_cnn/episodes --checkpoint <RUN_DIR>/checkpoints/best.pt
-```
-
-## Inference Command
-
-The laptop-first inference command is:
+## Evaluation
 
 ```bash
-python -m cnn_policy.drive --robot-ip <ROBOT_IP> --checkpoint <FILE>
+python -m intent_cnn_policy.eval \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --checkpoint <RUN_DIR>/checkpoints/best.pt
 ```
+
+## Inference
+
+```bash
+python -m intent_cnn_policy.drive \
+  --robot-ip <ROBOT_IP> \
+  --checkpoint <RUN_DIR>/checkpoints/best.pt \
+  --task "go left"
+```
+
+You can also use `--task-index`, but `--task` is usually easier for students.
 
 ## Upload One Session To Hugging Face
-
-If you want to share one selected recorded session directly on Hugging Face, run:
 
 ```bash
 python scripts/upload_hf_session.py
 ```
 
-What it does:
-
-- scans the CNN episodes root and lists the discovered sessions
-- shows each session name plus exact episode and frame counts
-- lets you select one session in a small picker window
-- creates a dataset repo named after that selected session
-- uploads the accepted session folder and, optionally, the matching raw backup
-
-If you prefer the terminal instead of the picker:
+If you prefer the terminal:
 
 ```bash
 python scripts/upload_hf_session.py --no-gui
 ```
 
-To test the upload flow without pushing anything:
+Dry run only:
 
 ```bash
 python scripts/upload_hf_session.py --dry-run --no-gui
 ```
 
-Inference loop:
+## Legacy No-Language Loop CNN
 
-1. fetch the latest camera frame from `/snapshot`
-2. maintain a rolling 3-frame buffer
-3. resize to `160x120`
-4. run the CNN
-5. smooth the normalized prediction, then scale it by safe `vx`, `vy`, and `omega` caps
-6. send `/velocity` to the robot
+The repo still ships the older no-language loop-CNN workflow for taped loops and lap-based collection.
+
+That path is now secondary:
+
+```text
+python -m client.cli --robot-ip <ROBOT_IP>
+  -> CNN-based
+  -> no-language loop mode (legacy)
+```
+
+The legacy training/inference package is `cnn_policy/`.
 
 ## Common Issues
 
-- If the robot drifts away from the path, you probably need more clean laps and more recovery examples.
-- If motion feels jittery, keep the model small and add a little more runtime smoothing before making the network deeper.
+- If the model trains but a custom task does not work at inference, confirm that exact task string appeared in the training data.
+- If the robot drifts away from the path, collect more clean recovery examples.
+- If motion feels jittery, increase runtime smoothing before making the model larger.
 - If the path is hard to see, improve lighting before adding more data.
-- If the model learns one direction but fails on the other, rebalance clockwise and counterclockwise samples.
-- If the robot keeps stopping early, check Wi-Fi and the robot watchdog before blaming the model.
-
-## Quick Rule
-
-One lap equals one episode.
-If a run is bad, discard it rather than saving a partial lap into the clean dataset.

@@ -1,28 +1,30 @@
 # TurboPi VLA Formalized
 
-TurboPi VLA Formalized is a beginner-friendly recording and training stack for the TurboPi Advanced Kit.
+TurboPi VLA Formalized is a student-friendly recording, training, export, and inference stack for the TurboPi Advanced Kit.
 
-It is split into two simple parts:
+The repo is built around two main workflows:
 
-- The robot runs a lightweight HTTP server for camera, motor, servo, and health endpoints.
-- The laptop runs the keyboard teleop client, records episodes, and saves data locally under `data/`.
+- `Intent-CNN`: a lightweight task-conditioned CNN that learns from camera frames plus a saved task label
+- `SmolVLA`: a LeRobot-compatible workflow that exports recorded episodes and drives the robot with a fine-tuned SmolVLA checkpoint
 
-The most important setup idea is this: use the robot hotspot only for first access, then move both the robot and the laptop onto the same Wi-Fi network. That gives you normal SSH, internet on the laptop, and a much smoother data-collection workflow.
+The recording client keeps the familiar built-in task list, but now also includes a `Custom task...` option so students can add one-off task prompts during collection without changing code first.
 
 ## What This Repo Includes
 
-- `robot_server/`: Flask server that runs on the TurboPi
-- `client/`: keyboard teleop plus the launcher for VLA and CNN recording
-- `cnn_policy/`: public CNN training, evaluation, and driving entrypoints
+- `robot_server/`: HTTP server for camera, velocity, and health endpoints on the TurboPi
+- `client/`: laptop-side launcher, teleop loop, and recording sessions
+- `intent_cnn_policy/`: train, evaluate, and drive the task-conditioned CNN
+- `smolvla_policy/`: TurboPi inference adapter for fine-tuned SmolVLA checkpoints
 - `storage/`: raw backup writer, accepted-episode writer, and LeRobot exporter
-- `scripts/deploy_server.sh`: helper script to copy the server to the robot and start it
-- `scripts/export_lerobot.py`: converter from this repo's episode format to a LeRobot-compatible dataset
-- `scripts/upload_hf_session.py`: interactive Hugging Face uploader for one recorded session
-- `design/cnn_v1/overview.html`: visual architecture explainer for the CNN pipeline
+- `scripts/export_lerobot.py`: export accepted episodes into a LeRobot dataset
+- `scripts/upload_hf_session.py`: upload one recorded session to Hugging Face
+- `docs/`: student-facing setup and workflow guides
 
-This repo does not currently ship a dashboard app or a VLA training stack. It focuses on clean data collection, LeRobot export, and a separate CNN baseline.
+Legacy note:
 
-## Quick Start
+- `cnn_policy/` remains available for the older no-language loop-CNN workflow, but the official student path is now `intent_cnn_policy/`
+
+## Official Student Workflow
 
 ### 1. Set up the laptop
 
@@ -42,85 +44,54 @@ source .venv/bin/activate
 pip install -r requirements-laptop.txt
 ```
 
-### 2. Connect to the robot hotspot for first access
+### 2. Connect the robot and laptop to the same Wi-Fi
 
-1. Power on the TurboPi and wait for it to boot.
-2. On your laptop, join the Wi-Fi network that starts with `HW`.
-3. The default hotspot password is usually `hiwonder`.
-4. SSH into the robot:
+Use the robot hotspot only for first access. After that, move the robot onto the same Wi-Fi as your laptop so you can SSH normally and keep internet access on the laptop.
+
+Hotspot first access:
 
 ```bash
 ssh pi@192.168.149.1
 ```
 
-The default username is usually `pi`. Many stock images use `raspberrypi` as the password.
-
-### 3. Move the robot onto your shared Wi-Fi
-
-Once you are inside the robot:
+Then on the robot:
 
 ```bash
 nmcli dev wifi list
 sudo nmcli device wifi connect "<SSID>" password "<PASSWORD>"
 ```
 
-Your SSH session will usually disconnect right away. That is normal because the robot is leaving hotspot mode and joining the shared network.
-
-### 4. Find the new robot IP and reconnect
-
-Reconnect your laptop to the same Wi-Fi and find the robot IP with one of these methods:
-
-- router connected-device list
-- WonderPi or vendor tooling
-- local display and keyboard on the robot, then `hostname -I`
-
-Then SSH back in:
+Reconnect to the robot on the shared network:
 
 ```bash
 ssh pi@<ROBOT_IP>
 ```
 
-### 5. Install robot-side Python packages
+### 3. Install robot-side dependencies
 
-If you are using the TurboPi vendor image, `ros_robot_controller_sdk` and `cv2` usually already exist on the robot.
-
-Install the lightweight Python deps either directly:
+If the repo already exists on the robot:
 
 ```bash
 python3 -m pip install -r requirements-robot.txt
-```
-
-or from your laptop through the helper script:
-
-```bash
-bash scripts/deploy_server.sh deps
-```
-
-### 6. Start the robot server
-
-If the repo is already on the robot:
-
-```bash
 python3 robot_server/server.py --port 8080
 ```
 
-If the repo only exists on your laptop, use the helper script from Git Bash, WSL, or another Bash shell:
+If the repo only exists on your laptop, use the helper script from Git Bash or WSL:
 
 ```bash
+bash scripts/deploy_server.sh deps
 bash scripts/deploy_server.sh start
 ```
 
-### 7. Start the laptop client
+### 4. Start the laptop client
 
-If you want to test driving before recording, use teleop-only mode:
+Quick teleop smoke test:
 
 ```bash
 python -m client.teleop --robot-ip <ROBOT_IP>
 ```
 
-Then, when you are ready to collect data, start the launcher:
-
-Shared-Wi-Fi mode:
+Start the launcher:
 
 ```bash
 python -m client.cli --robot-ip <ROBOT_IP>
@@ -132,131 +103,190 @@ Hotspot-only quick test:
 python -m client
 ```
 
-The launcher will then ask whether you want:
+The launcher offers:
 
 - `CNN-based`
 - `VLA-based`
 
-Choose `VLA-based` for the original left/right/front/behind task flow. Choose `CNN-based` for the image-only CNN dataset flow.
+Inside `CNN-based`, the recommended branch is:
 
-### 8. Train the CNN baseline
+- `intent-conditioned (recommended)`
 
-Install the CNN training extras on the laptop:
+The older `no-language loop mode (legacy)` path still exists, but it is no longer the primary student workflow.
 
-```bash
-pip install -r requirements-cnn.txt
+## Recording With Built-In Tasks Plus Custom Tasks
+
+Both the VLA recorder and the intent-conditioned CNN recorder now behave like this:
+
+- built-in tasks still appear as numbered options
+- the last option is `Custom task...`
+- if selected, the client prompts for a task string and adds it to the current session
+- that typed task is saved just like any built-in task
+- future episodes in the same session can reuse it directly from the numbered list
+
+Saved session structure:
+
+```text
+data/<dataset_name>/
+|-- raw/
+|   `-- session_YYYYMMDD_HHMMSS/
+|       |-- session_info.json
+|       |-- telemetry.jsonl
+|       `-- video.mp4
+`-- episodes/
+    `-- session_YYYYMMDD_HHMMSS/
+        |-- session_info.json
+        |-- tasks.json
+        `-- episode_000000/
+            |-- data.parquet
+            |-- episode_info.json
+            `-- video.mp4
 ```
 
-Then train from the CNN episode root:
+Important saved fields:
 
-```bash
-python -m cnn_policy.train \
-  --episodes-dir data/turbopi_cnn/episodes \
-  --run-dir runs/cnn_v1
+- `task`: exact task text chosen for the episode
+- `task_index`: session-local index for that task
+- `observation.state`: previous normalized action
+- `action`: current normalized teleop command
+
+## Intent-CNN Workflow
+
+The official lightweight baseline is the task-conditioned CNN.
+
+Recommended recording dataset root:
+
+```text
+data/turbopi_intent_cnn/
 ```
 
-After training starts, note the printed run directory, for example `runs/cnn_v1/run_YYYYMMDD_HHMMSS`. Use that concrete folder as `<RUN_DIR>` in the next commands.
-
-Evaluate a checkpoint:
+Record data:
 
 ```bash
-python -m cnn_policy.eval \
-  --episodes-dir data/turbopi_cnn/episodes \
+python -m client.cli --robot-ip <ROBOT_IP>
+```
+
+Then choose:
+
+```text
+CNN-based
+-> intent-conditioned (recommended)
+```
+
+Train:
+
+```bash
+python -m intent_cnn_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --run-dir runs/intent_cnn_v1
+```
+
+Evaluate:
+
+```bash
+python -m intent_cnn_policy.eval \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
   --checkpoint <RUN_DIR>/checkpoints/best.pt
 ```
 
-Drive the robot from the trained CNN:
+Drive:
 
 ```bash
-python -m cnn_policy.drive \
+python -m intent_cnn_policy.drive \
   --robot-ip <ROBOT_IP> \
-  --checkpoint <RUN_DIR>/checkpoints/best.pt
+  --checkpoint <RUN_DIR>/checkpoints/best.pt \
+  --task "go left"
 ```
 
-### 9. Upload One Recorded Session To Hugging Face
+Important limitation:
 
-If you want a picker that shows the saved sessions, episode counts, and then uploads the selected one to a dataset repo named after that session:
+- the intent-conditioned CNN is still a closed-set task-label model
+- it can drive only with task strings that were present in the training data for that checkpoint
+
+## SmolVLA Workflow
+
+The repo supports SmolVLA through:
+
+- LeRobot export from recorded TurboPi episodes
+- a TurboPi-specific `smolvla_policy` drive adapter
+
+Recommended VLA recording dataset root:
+
+```text
+data/turbopi_nav/
+```
+
+Record task-conditioned episodes:
+
+```bash
+python -m client.cli --robot-ip <ROBOT_IP>
+```
+
+Then choose:
+
+```text
+VLA-based
+```
+
+Export to LeRobot:
+
+```bash
+pip install -r requirements-export.txt
+
+python scripts/export_lerobot.py \
+  --episodes-dir data/turbopi_nav/episodes \
+  --output-dir temp/intent_cnn_lerobot_export \
+  --state-source shifted_action \
+  --overwrite
+```
+
+Fine-tuning itself runs through LeRobot, for example:
+
+```bash
+python -m lerobot.scripts.lerobot_train \
+  --policy.path=lerobot/smolvla_base \
+  --policy.push_to_hub=false \
+  --dataset.repo_id=local/<YOUR_EXPORTED_REPO_ID> \
+  --dataset.root=<YOUR_EXPORT_DIR> \
+  --batch_size=32 \
+  --steps=5000 \
+  --output_dir=<RUN_DIR> \
+  --job_name=turbopi_smolvla \
+  --policy.device=cuda
+```
+
+Drive the robot from a fine-tuned checkpoint:
+
+```bash
+python -m smolvla_policy.drive \
+  --checkpoint <PRETRAINED_MODEL_DIR> \
+  --task "go left" \
+  --robot-ip <ROBOT_IP> \
+  --device cuda
+```
+
+The SmolVLA driver replans from the latest camera frame each loop by default, which is better for line-following and reactive path correction than consuming a long cached action chunk open-loop.
+
+## Utilities
+
+Upload one recorded session to Hugging Face:
 
 ```bash
 python scripts/upload_hf_session.py
 ```
 
-The uploader:
-
-- scans your local `episodes/` folders
-- shows session name, episode count, frame count, and directions
-- lets you pick one session
-- creates a Hugging Face dataset repo named after that session
-- uploads the accepted session folder, plus the matching `raw/` backup if you enable it
-
-### 10. Export to LeRobot format
-
-After you record accepted episodes, install the export extras:
-
-```bash
-pip install -r requirements-export.txt
-```
-
-Then convert your saved episodes:
-
-```bash
-python scripts/export_lerobot.py \
-  --episodes-dir data/turbopi_nav/episodes \
-  --output-dir data/turbopi_nav/lerobot \
-  --repo-id <HF_DATASET_REPO>
-```
-
-By default the exporter uses `--state-source shifted_action`, which repairs older sessions where `observation.state` was incorrectly saved as the same-step action label.
-
-Important export behavior:
-
-- `--episodes-dir` can point at the full `episodes/` root or at one specific `session_YYYYMMDD_HHMMSS/` folder.
-- The exporter converts every accepted `episode_*` folder under that path.
-- If you want to leave out a bad episode, delete that episode folder before exporting.
-- LeRobot may pack all exported frames into one chunked dataset video. That is normal.
-- The visible video duration is `total_frames / fps`, not the wall-clock time you spent driving between episodes.
-
-Example: export one cleaned session only
-
-```bash
-python scripts/export_lerobot.py \
-  --episodes-dir data/turbopi_nav/episodes/session_20260402_114217 \
-  --output-dir data/turbopi_nav/lerobot_session_20260402_114217 \
-  --state-source shifted_action \
-  --overwrite
-```
-
-### 11. Inspect what was recorded
-
-If you want to manually verify that left/right motion and rotation were actually captured:
+Inspect recorded episode contents:
 
 ```bash
 python scripts/inspect_episode.py --episodes-dir data/turbopi_nav/episodes
 ```
-
-That prints a per-frame table with:
-
-- `action_vx`, `action_vy`, `action_omega`
-- `state_vx`, `state_vy`, `state_omega`
-- counts for forward, backward, left, right, rotate-left, rotate-right, and stop frames
-- a check that saved `state` is shifted relative to `action`
-
-## Why Same Wi-Fi Matters
-
-- Your laptop keeps internet access for installs, updates, and uploads.
-- SSH becomes a normal LAN workflow instead of constantly switching back to the robot hotspot.
-- The recording client can talk to the robot server directly while saving data on the laptop.
-- It is much easier for a classroom setup where multiple students need a repeatable workflow.
-
-After your first successful `nmcli` connection, you can make the setup persistent with `~/hiwonder-toolbox/wifi_conf.py`. The full steps are in the Wi-Fi guide.
 
 ## Docs
 
 - [Getting Started](docs/getting-started.md)
 - [Wi-Fi and SSH Guide](docs/wifi-and-ssh.md)
 - [Data Collection Guide](docs/data-collection.md)
-- [CNN Dataset And Training Guide](docs/cnn.md)
-- [CNN V1 Overview](design/cnn_v1/overview.html)
+- [Intent-CNN Guide](docs/cnn.md)
 - [Troubleshooting](docs/troubleshooting.md)
 
 ## Repo Layout
@@ -264,59 +294,29 @@ After your first successful `nmcli` connection, you can make the setup persisten
 ```text
 .
 |-- client/
-|-- cnn_policy/
-|-- design/
+|-- intent_cnn_policy/
+|-- smolvla_policy/
+|-- cnn_policy/              # legacy no-language loop CNN
 |-- robot_server/
 |-- scripts/
 |-- storage/
-|-- data/                    # created automatically when you record or export
+|-- docs/
 |-- requirements-laptop.txt
 |-- requirements-robot.txt
 |-- requirements-cnn.txt
-|-- requirements-export.txt
-`-- docs/
-```
-
-## Official Commands
-
-Laptop:
-
-```bash
-python -m client
-python -m client.cli --robot-ip <ROBOT_IP>
-python -m client.teleop --robot-ip <ROBOT_IP>
-python -m cnn_policy.train --episodes-dir data/turbopi_cnn/episodes --run-dir runs/cnn_v1
-python -m cnn_policy.eval --episodes-dir data/turbopi_cnn/episodes --checkpoint <FILE>
-python -m cnn_policy.drive --robot-ip <ROBOT_IP> --checkpoint <FILE>
-python scripts/upload_hf_session.py
-python scripts/inspect_episode.py --episodes-dir data/turbopi_nav/episodes
-python scripts/export_lerobot.py --episodes-dir data/turbopi_nav/episodes --output-dir data/turbopi_nav/lerobot --repo-id <HF_DATASET_REPO>
-```
-
-Robot, when the repo is already on the robot:
-
-```bash
-python3 robot_server/server.py --port 8080
-```
-
-Laptop helper for deploying the server:
-
-```bash
-bash scripts/deploy_server.sh deps
-bash scripts/deploy_server.sh start
+`-- requirements-export.txt
 ```
 
 ## Notes for Open-Source Users
 
 - Runtime data is not tracked in this repo. Recording runs create timestamped folders under `data/<dataset_name>/`.
-- Accepted episodes are stored as one folder per episode with `video.mp4` plus `data.parquet`.
-- Temporary validation outputs such as `data/workflow_validation/` are safe to delete after you finish checking the pipeline.
-- The recorder now saves `observation.state` as the previous normalized action, not the current action, to avoid target leakage during training.
+- Accepted episodes are stored as one folder per episode with `video.mp4`, `data.parquet`, and `episode_info.json`.
+- `observation.state` is saved as the previous normalized action to avoid target leakage during training.
 - `ros_robot_controller_sdk` is TurboPi-specific and comes from the robot image, not from `pip`.
-- If your robot image differs from the common Hiwonder defaults, check the vendor network guide first and then come back to this repo.
+- Generated artifacts such as local checkpoints, exported datasets, copied pretrained models, and temp folders are intentionally ignored.
 
 ## References
 
 - [Hiwonder TurboPi network setup](https://docs.hiwonder.com/projects/TurboPi/en/advanced/docs/7.network_configuration.html)
 - [Hiwonder TurboPi getting ready](https://docs.hiwonder.com/projects/TurboPi/en/latest/docs/1.getting_ready.html)
-- [Hugging Face LeRobot datasets docs](https://huggingface.co/docs/lerobot/main/en/lerobot-dataset-v3)
+- [Hugging Face LeRobot dataset docs](https://huggingface.co/docs/lerobot/main/en/lerobot-dataset-v3)

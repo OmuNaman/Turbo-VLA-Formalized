@@ -89,6 +89,7 @@ class RawWriter:
         action: np.ndarray,
         timestamp: float,
         task: str,
+        task_index: int | None = None,
         episode_index: int | None = None,
     ) -> None:
         """Write one frame of video and telemetry."""
@@ -109,6 +110,7 @@ class RawWriter:
                     "state": state.tolist(),
                     "action": action.tolist(),
                     "task": task,
+                    "task_index": task_index,
                     "episode_idx": episode_index,
                 }
                 self._telemetry_file.write(json.dumps(entry) + "\n")

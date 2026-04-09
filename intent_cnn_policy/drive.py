@@ -25,7 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--robot-port", type=int, default=8080)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--task-index", type=int, default=None)
-    parser.add_argument("--task", default=None, help="Task string to condition on")
+    parser.add_argument(
+        "--task",
+        default=None,
+        help="Exact task string from the checkpoint vocabulary, for example 'go left'",
+    )
     parser.add_argument("--loop-hz", type=float, default=10.0)
     parser.add_argument("--smoothing", type=float, default=0.65, help="EMA factor for previous action")
     parser.add_argument("--vx-cap", type=float, default=35.0)
@@ -92,7 +96,7 @@ def resolve_task_selection(task_names: list[str], task_name: str | None, task_in
     if not task_names:
         raise ValueError("No task vocabulary was found in the checkpoint. Pass --task-index explicitly.")
 
-    print("\n  Available tasks:")
+    print("\n  Available tasks in this checkpoint:")
     for index, name in enumerate(task_names):
         print(f"    [{index}] {name}")
     print()

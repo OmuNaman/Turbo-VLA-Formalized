@@ -1,4 +1,4 @@
-"""CNN launcher branch and generic dataset recorder entry points."""
+"""CNN launcher branch and dataset recorder entry points."""
 
 from __future__ import annotations
 
@@ -11,17 +11,6 @@ DEFAULT_INTENT_CNN_TASKS = [
     "go forward",
     "go backward",
 ]
-
-
-def _run_cnn_language_placeholder() -> None:
-    """Show the language-intent placeholder screen."""
-    print()
-    print("=" * 50)
-    print("  CNN With Language Intent")
-    print("=" * 50)
-    print("\n  This path now records language-conditioned CNN demonstrations.\n")
-
-
 def _run_cnn_dataset_recording(args: Namespace) -> None:
     """Run the no-language CNN dataset recorder."""
     from config import RecordingConfig
@@ -77,7 +66,7 @@ def run_from_args(args: Namespace, prompt_menu) -> None:
     if args.cnn_intent is None:
         selection = prompt_menu(
             "CNN Intent Options",
-            ["with language intent", "without language intent"],
+            ["intent-conditioned (recommended)", "no-language loop mode (legacy)"],
         )
         if selection is None:
             return

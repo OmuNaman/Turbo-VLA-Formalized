@@ -2,52 +2,28 @@
 
 This repo records teleoperated episodes from a laptop while the TurboPi runs the robot server.
 
-If you are building the separate CNN workflow, see [CNN Dataset And Training Guide](cnn.md). That path uses its own dataset root and recording rules.
+The official student-facing recording paths are:
 
-## What The Current Code Does
+- `VLA-based`: task-conditioned recording for LeRobot export and SmolVLA
+- `CNN-based -> intent-conditioned (recommended)`: task-conditioned recording for `intent_cnn_policy`
 
-The committed code supports:
+The older no-language loop CNN path still exists, but it is secondary.
 
-- keyboard teleoperation from the laptop
-- teleop-only driving without recording
-- launcher-based routing into `CNN-based` or `VLA-based` recording
-- live frame capture from the robot over HTTP
-- raw session backups
-- accepted-episode exports as MP4 plus Parquet
-- CNN training, evaluation, and laptop-first inference
-- LeRobot export from accepted episodes into `data/<dataset_name>/lerobot/`
+## Start a Recording Session
 
-The committed code does not currently include:
-
-- a dashboard app
-- a VLA training stack
-- a dataset upload script beyond the optional `--push-to-hub` flag in the exporter
-
-## Start A Recording Session
-
-If you only want to drive the robot and not save data yet:
+Teleop-only smoke test:
 
 ```bash
 python -m client.teleop --robot-ip <ROBOT_IP>
 ```
 
-That is useful for:
-
-- checking that the server is running
-- checking Wi-Fi latency
-- confirming the robot moves the way you expect
-
-When you are ready to record:
-
-1. Make sure the robot server is running.
-2. Activate your laptop virtual environment.
-3. Start the launcher:
+Full launcher:
 
 ```bash
 python -m client.cli --robot-ip <ROBOT_IP>
 ```
 
-For AP-mode testing:
+AP-mode quick test:
 
 ```bash
 python -m client
@@ -55,8 +31,8 @@ python -m client
 
 After launch:
 
-- choose `VLA-based` for the current task list workflow
-- choose `CNN-based` for the CNN dataset workflow
+- choose `VLA-based` for the LeRobot / SmolVLA data path
+- choose `CNN-based -> intent-conditioned (recommended)` for the Intent-CNN path
 
 ## Controls
 
@@ -67,18 +43,21 @@ After launch:
 - left arrow: discard the current episode
 - `Esc`: stop the full session
 
-## Default Tasks
+## Built-In Tasks Plus Custom Tasks
 
-By default, the task list is:
+The VLA and intent-conditioned CNN recorders both show:
 
-- `go to the left of the box`
-- `go to the right of the box`
-- `go forward to the box`
-- `go behind the box`
+- the built-in task list from `tasks.py`
+- one extra option: `Custom task...`
 
-You can change these in `tasks.py`.
+If a student selects `Custom task...`:
 
-The CNN path does not use this task list. It asks for `clockwise` or `counterclockwise` instead and treats one full lap of your chosen track as one accepted episode.
+1. the client prompts for a task string
+2. that string is assigned a session-local `task_index`
+3. the task is appended to the current session list
+4. later episodes in the same session can reuse it from the menu directly
+
+This keeps the default classroom task list simple while still allowing one-off prompts without editing code.
 
 ## What Gets Saved
 
@@ -99,24 +78,34 @@ data/turbopi_nav/
         |-- tasks.json
         `-- episode_000000/
             |-- data.parquet
+            |-- episode_info.json
             `-- video.mp4
 ```
 
 Why there are two outputs:
 
 - `raw/` keeps a continuous backup of the full session
-- `episodes/` keeps only accepted episodes in a cleaner structure
+- `episodes/` keeps only accepted episodes in a cleaner training/export structure
 
-## Why The Saved State Matters
+Important saved fields:
+
+- `task`: exact task text selected for that episode
+- `task_index`: session-local integer id for that task
+- `observation.state`: previous normalized action
+- `action`: current normalized teleop command
+
+The raw telemetry backup also records the active task text for each saved frame.
+
+## Why the Saved State Matters
 
 For training, `observation.state` should not be the same thing as the current target action.
 
-This recorder now saves:
+This recorder saves:
 
 - `observation.state`: previous normalized action
 - `action`: current normalized teleop command
 
-That avoids leaking the answer into the model input when you train an action head.
+That avoids leaking the answer into the model input.
 
 ## No Overwrite Behavior
 
@@ -128,9 +117,9 @@ That means:
 - you can compare sessions later
 - students do not lose data by starting a new run
 
-## Export To LeRobot
+## Export to LeRobot
 
-Accepted episodes can be converted into a LeRobot-compatible dataset:
+Accepted VLA episodes can be converted into a LeRobot-compatible dataset:
 
 ```bash
 pip install -r requirements-export.txt
@@ -144,42 +133,25 @@ python scripts/export_lerobot.py \
 Important exporter behavior:
 
 - it scans every accepted `episode_*` folder under `episodes/`
-- it can also scan just one `session_YYYYMMDD_HHMMSS/` folder if you only want to export that run
+- it can also scan one specific `session_YYYYMMDD_HHMMSS/` folder
 - it verifies that `data.parquet` rows match decoded video frames
 - it rebuilds `observation.state` from the previous action by default
-- it writes a standard LeRobot dataset with `observation.images.front`, `action`, and `observation.state`
-- it may pack multiple exported episodes into one chunked dataset video file, which is normal for LeRobot
+- it writes a standard LeRobot dataset with `observation.images.front`, `action`, `task`, and optionally `observation.state`
+- custom task strings are exported exactly as saved
 
-What this means in practice:
+If you want different state behavior:
 
-- the exported video duration is `total_frames / fps`
-- the packed dataset video is not the same thing as your original wall-clock recording session
-- short trash episodes can still appear in export unless you remove those `episode_*` folders first
-- episode boundaries are preserved in LeRobot metadata even when frames are packed into one video chunk
-
-If you want different behavior:
-
-- `--state-source shifted_action`: recommended default and the safest choice for older data
+- `--state-source shifted_action`: recommended default
 - `--state-source recorded`: trust the saved `observation.state`
 - `--state-source zeros`: use a zero vector for every frame
 - `--state-source none`: export without `observation.state`
 
-Example: export one cleaned session only
+## Train the Intent-CNN Baseline
 
-```bash
-python scripts/export_lerobot.py \
-  --episodes-dir data/turbopi_nav/episodes/session_20260402_114217 \
-  --output-dir data/turbopi_nav/lerobot_session_20260402_114217 \
-  --state-source shifted_action \
-  --overwrite
-```
-
-## Train The CNN Baseline
-
-CNN data is intentionally separate from VLA data:
+Intent-CNN data is intentionally separate from VLA data:
 
 ```text
-data/turbopi_cnn/
+data/turbopi_intent_cnn/
 ```
 
 Install the CNN extras:
@@ -191,45 +163,46 @@ pip install -r requirements-cnn.txt
 Train:
 
 ```bash
-python -m cnn_policy.train \
-  --episodes-dir data/turbopi_cnn/episodes \
-  --run-dir runs/cnn_v1
+python -m intent_cnn_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --run-dir runs/intent_cnn_v1
 ```
 
 Evaluate:
 
 ```bash
-python -m cnn_policy.eval \
-  --episodes-dir data/turbopi_cnn/episodes \
+python -m intent_cnn_policy.eval \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
   --checkpoint <RUN_DIR>/checkpoints/best.pt
 ```
 
 Drive:
 
 ```bash
-python -m cnn_policy.drive \
+python -m intent_cnn_policy.drive \
   --robot-ip <ROBOT_IP> \
-  --checkpoint <RUN_DIR>/checkpoints/best.pt
+  --checkpoint <RUN_DIR>/checkpoints/best.pt \
+  --task "go right"
 ```
+
+If you trained on a custom task, that exact string becomes a valid inference label for that checkpoint.
 
 ## Inspect Recorded Actions
 
-If you record two test episodes such as "go left" and "go right", you can inspect exactly what was saved:
+If you want to verify what was captured:
 
 ```bash
 python scripts/inspect_episode.py --episodes-dir data/turbopi_nav/episodes
 ```
 
-Useful things this reports:
+Useful reports include:
 
-- `action_vx`: forward and backward component
-- `action_vy`: left and right component
-- `action_omega`: rotation component
-- `state_*`: previous-step state that will be fed to training
+- `action_vx`, `action_vy`, `action_omega`
+- `state_vx`, `state_vy`, `state_omega`
 - counts for left, right, rotate-left, rotate-right, and stop frames
 - whether `state` looks like a shifted version of `action`
 
-If you want a CSV for manual inspection:
+Optional CSV:
 
 ```bash
 python scripts/inspect_episode.py \
@@ -242,5 +215,4 @@ python scripts/inspect_episode.py \
 - Start with a lower teleop speed until the controls feel natural.
 - Charge the battery before long recording sessions.
 - Run the client on the local laptop session, not inside a remote SSH shell, because `pynput` listens for local keyboard events.
-- If a Wi-Fi hiccup causes motor commands to fail, the recorder now skips those frames instead of silently saving bad action labels.
-- Validation-only folders such as `data/workflow_validation/` are disposable and can be deleted after you confirm the pipeline works.
+- If a Wi-Fi hiccup causes motor commands to fail, the recorder skips those frames instead of silently saving bad labels.

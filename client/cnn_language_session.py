@@ -13,7 +13,7 @@ import numpy as np
 from config import RecordingConfig
 from storage.episode_writer import EpisodeWriter
 from storage.raw_writer import RawWriter
-from tasks import TaskManager
+from tasks import CUSTOM_TASK_LABEL, TaskManager, load_saved_tasks
 from timing import FPSRegulator
 
 from .episode_manager import EpisodeManager
@@ -57,6 +57,7 @@ class CNNLanguageSession:
             max_speed=config.max_duty,
         )
         self.session_name = config.session_name or datetime.now().strftime("session_%Y%m%d_%H%M%S")
+        self.tasks.merge_tasks(load_saved_tasks(config.episodes_dir / self.session_name))
         self.resume_state = inspect_saved_session(config.episodes_dir / self.session_name)
         self.episodes = EpisodeManager(
             start_episode_index=self.resume_state.next_episode_index,
@@ -80,7 +81,7 @@ class CNNLanguageSession:
         self._last_health_check = 0.0
         self._health: dict = {}
 
-        self._write_session_info()
+        self._write_session_info(increment_resume=True)
 
     def run(self) -> None:
         """Main loop that records one task-conditioned episode at a time."""
@@ -157,7 +158,7 @@ class CNNLanguageSession:
         finally:
             self._shutdown()
 
-    def _write_session_info(self) -> None:
+    def _write_session_info(self, *, increment_resume: bool) -> None:
         """Persist session-level metadata beside raw and accepted outputs."""
         now = datetime.now().isoformat(timespec="seconds")
         session_info = {
@@ -178,6 +179,8 @@ class CNNLanguageSession:
             "task_type": "instruction_conditioned_path_following",
             "episode_definition": "one_instruction_one_demo_manual_accept",
             "collection_style": "clean_demo",
+            "task_selection_mode": "listed_plus_custom",
+            "custom_task_enabled": True,
             "observation_state_semantics": "previous_action_normalized",
             "action_semantics": "current_action_normalized",
             "accepted_episode_timestamps": "episode_relative_seconds",
@@ -193,17 +196,48 @@ class CNNLanguageSession:
                     with path.open("r", encoding="utf-8") as handle:
                         existing = json.load(handle)
                     session_info["created_at"] = existing.get("created_at", session_info["created_at"])
-                    session_info["resume_count"] = int(existing.get("resume_count", 0)) + 1
+                    existing_resume_count = int(existing.get("resume_count", 0))
+                    session_info["resume_count"] = (
+                        existing_resume_count + 1 if increment_resume else existing_resume_count
+                    )
                 except Exception:
-                    session_info["resume_count"] = 1
+                    session_info["resume_count"] = 1 if increment_resume else 0
             else:
                 session_info["resume_count"] = 0
             with path.open("w", encoding="utf-8") as handle:
                 json.dump(session_info, handle, indent=2)
 
+    def _persist_task_catalog(self) -> None:
+        """Rewrite the session task mapping and session metadata after task changes."""
+        self.episode_writer.save_task_mapping(self.tasks.tasks)
+        self._write_session_info(increment_resume=False)
+
+    def _prompt_for_custom_task(self) -> str | None:
+        """Prompt for a custom task string and persist it if it is new."""
+        while True:
+            try:
+                _flush_stdin()
+                custom_task = input("  Enter custom task text: ").strip()
+            except EOFError:
+                self._running = False
+                return None
+
+            if not custom_task:
+                print("  Task text cannot be empty.")
+                continue
+
+            is_new = not self.tasks.has_task(custom_task)
+            task_index = self.tasks.get_index(custom_task)
+            if is_new:
+                self._persist_task_catalog()
+                print(f'  -> Added custom task [{task_index}]: "{custom_task}"')
+            else:
+                print(f'  -> Reusing existing task [{task_index}]: "{custom_task}"')
+            return custom_task
+
     def _select_task(self) -> tuple[str, int]:
         """Prompt the user to select the instruction for this episode."""
-        self.tasks.print_tasks()
+        self.tasks.print_tasks(include_custom_option=True)
         time.sleep(0.3)
         _flush_stdin()
 
@@ -216,9 +250,14 @@ class CNNLanguageSession:
                     task = self.tasks.get_task(idx)
                     print(f'  -> Task: "{task}"')
                     return task, idx
-                print(f"  Invalid. Choose 0-{len(self.tasks) - 1}")
+                if idx == len(self.tasks):
+                    custom_task = self._prompt_for_custom_task()
+                    if custom_task is None:
+                        return "", 0
+                    return custom_task, self.tasks.get_index(custom_task)
+                print(f"  Invalid. Choose 0-{len(self.tasks)}")
             except ValueError:
-                print("  Enter a number.")
+                print(f"  Enter a number or choose {CUSTOM_TASK_LABEL}.")
             except EOFError:
                 self._running = False
                 return "", 0
@@ -323,6 +362,7 @@ class CNNLanguageSession:
                 action=action,
                 timestamp=robot_ts,
                 task=task,
+                task_index=task_index,
                 episode_index=ep_idx,
             )
 
