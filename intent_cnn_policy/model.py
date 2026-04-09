@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 import torch
@@ -129,7 +129,10 @@ def save_checkpoint(
 def load_checkpoint(path: Path, map_location: str | torch.device | None = None) -> tuple[IntentCNNPolicy, dict[str, object]]:
     """Load a checkpoint and return the instantiated model plus raw payload."""
     payload = torch.load(Path(path), map_location=map_location)
-    config = IntentCNNConfig(**payload.get("model_config", {}))
+    raw_config = payload.get("model_config", {})
+    known_keys = {field.name for field in fields(IntentCNNConfig)}
+    filtered_config = {key: value for key, value in raw_config.items() if key in known_keys}
+    config = IntentCNNConfig(**filtered_config)
     model = IntentCNNPolicy(config=config)
     model.load_state_dict(payload["model_state_dict"])
     return model, payload

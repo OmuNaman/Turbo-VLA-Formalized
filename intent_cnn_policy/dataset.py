@@ -80,6 +80,35 @@ def _read_session_task_names(session_dir: Path) -> list[str]:
     return []
 
 
+def _read_json(path: Path) -> dict:
+    """Read a JSON file, returning an empty dict on parse errors."""
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _is_intent_conditioned_episode(session_info: dict, episode_info: dict) -> bool:
+    """Return whether the metadata clearly describes the intent-conditioned CNN flow."""
+    intent_mode = episode_info.get("intent_mode") or session_info.get("intent_mode")
+    if intent_mode is not None:
+        return str(intent_mode) == "language"
+
+    mode_family = episode_info.get("mode_family") or session_info.get("mode_family")
+    if mode_family is not None and str(mode_family) != "cnn":
+        return False
+
+    task_type = episode_info.get("task_type") or session_info.get("task_type")
+    if task_type is not None:
+        return str(task_type) == "instruction_conditioned_path_following"
+
+    if episode_info.get("direction") or session_info.get("allowed_directions"):
+        return False
+    return False
+
+
 def discover_intent_episodes(episodes_dir: Path) -> list[EpisodeRecord]:
     """Discover saved intent-conditioned episodes and their tasks."""
     records: list[EpisodeRecord] = []
@@ -92,14 +121,14 @@ def discover_intent_episodes(episodes_dir: Path) -> list[EpisodeRecord]:
         if not parquet_path.exists() or not video_path.exists() or not info_path.exists():
             continue
 
-        df = pd.read_parquet(parquet_path, columns=["task"])
-        if df.empty:
+        info = _read_json(info_path)
+        session_info = _read_json(episode_dir.parent / "session_info.json")
+        if not _is_intent_conditioned_episode(session_info, info):
             continue
 
-        try:
-            info = json.loads(info_path.read_text(encoding="utf-8"))
-        except Exception:
-            info = {}
+        df = pd.read_parquet(parquet_path)
+        if df.empty or "task" not in df.columns:
+            continue
 
         task = str(df["task"].iloc[0])
         task_index_hint = info.get("task_index")
@@ -243,6 +272,7 @@ class IntentEpisodeDataset(Dataset):
         self.sample_weights: list[float] = []
         self.task_counts: dict[str, int] = {task: 0 for task in self.task_names}
 
+        episode_actions: list[np.ndarray] = []
         for episode_idx, record in enumerate(self.records):
             if record.task not in self.task_to_index:
                 raise ValueError(
@@ -250,7 +280,10 @@ class IntentEpisodeDataset(Dataset):
                 )
             df = pd.read_parquet(record.episode_dir / "data.parquet", columns=["action"])
             actions = np.asarray(df["action"].tolist(), dtype=np.float32)
+            episode_actions.append(actions)
             self.task_counts[record.task] = self.task_counts.get(record.task, 0) + len(actions)
+
+        for episode_idx, (record, actions) in enumerate(zip(self.records, episode_actions, strict=False)):
             for frame_idx, action in enumerate(actions):
                 self.samples.append(SampleIndex(episode_idx=episode_idx, frame_idx=frame_idx))
                 self.sample_weights.append(self._compute_sample_weight(action, record.task))

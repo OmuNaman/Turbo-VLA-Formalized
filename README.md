@@ -19,6 +19,7 @@ The recording client keeps the familiar built-in task list, but now also include
 - `scripts/export_lerobot.py`: export accepted episodes into a LeRobot dataset
 - `scripts/upload_hf_session.py`: upload one recorded session to Hugging Face
 - `docs/`: student-facing setup and workflow guides
+- `requirements-smolvla.txt`: local SmolVLA inference/runtime dependencies
 
 Legacy note:
 
@@ -123,6 +124,7 @@ Both the VLA recorder and the intent-conditioned CNN recorder now behave like th
 - if selected, the client prompts for a task string and adds it to the current session
 - that typed task is saved just like any built-in task
 - future episodes in the same session can reuse it directly from the numbered list
+- VLA defaults come from `tasks.py::DEFAULT_TASKS` and Intent-CNN defaults come from `tasks.py::DEFAULT_INTENT_CNN_TASKS`
 
 Saved session structure:
 
@@ -235,7 +237,7 @@ pip install -r requirements-export.txt
 
 python scripts/export_lerobot.py \
   --episodes-dir data/turbopi_nav/episodes \
-  --output-dir temp/intent_cnn_lerobot_export \
+  --output-dir data/turbopi_nav/lerobot \
   --state-source shifted_action \
   --overwrite
 ```
@@ -258,6 +260,8 @@ python -m lerobot.scripts.lerobot_train \
 Drive the robot from a fine-tuned checkpoint:
 
 ```bash
+pip install -r requirements-smolvla.txt
+
 python -m smolvla_policy.drive \
   --checkpoint <PRETRAINED_MODEL_DIR> \
   --task "go left" \
@@ -267,6 +271,12 @@ python -m smolvla_policy.drive \
 
 The SmolVLA driver replans from the latest camera frame each loop by default, which is better for line-following and reactive path correction than consuming a long cached action chunk open-loop.
 
+If you trained with a non-default export state contract, keep runtime aligned:
+
+- export `--state-source shifted_action` -> drive with default `--state-mode auto`
+- export `--state-source zeros` -> drive with `--state-mode zeros`
+- export `--state-source none` -> use a checkpoint that does not expect `observation.state`
+
 ## Utilities
 
 Upload one recorded session to Hugging Face:
@@ -274,6 +284,8 @@ Upload one recorded session to Hugging Face:
 ```bash
 python scripts/upload_hf_session.py
 ```
+
+By default the uploader scans the whole local `data/` tree, so it can find sessions under both `data/turbopi_intent_cnn/` and `data/turbopi_nav/`.
 
 Inspect recorded episode contents:
 
@@ -297,6 +309,7 @@ python scripts/inspect_episode.py --episodes-dir data/turbopi_nav/episodes
 |-- intent_cnn_policy/
 |-- smolvla_policy/
 |-- cnn_policy/              # legacy no-language loop CNN
+|-- loop_cnn/               # internal legacy implementation behind cnn_policy
 |-- robot_server/
 |-- scripts/
 |-- storage/
@@ -304,12 +317,14 @@ python scripts/inspect_episode.py --episodes-dir data/turbopi_nav/episodes
 |-- requirements-laptop.txt
 |-- requirements-robot.txt
 |-- requirements-cnn.txt
+|-- requirements-smolvla.txt
 `-- requirements-export.txt
 ```
 
 ## Notes for Open-Source Users
 
 - Runtime data is not tracked in this repo. Recording runs create timestamped folders under `data/<dataset_name>/`.
+- Pass `--session-name <NAME>` if you want to resume/appended into an existing session folder instead of creating a fresh timestamped one.
 - Accepted episodes are stored as one folder per episode with `video.mp4`, `data.parquet`, and `episode_info.json`.
 - `observation.state` is saved as the previous normalized action to avoid target leakage during training.
 - `ros_robot_controller_sdk` is TurboPi-specific and comes from the robot image, not from `pip`.

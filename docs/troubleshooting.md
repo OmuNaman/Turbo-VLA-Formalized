@@ -99,7 +99,6 @@ Fixes:
 Check these common causes:
 
 - `pip install -r requirements-export.txt` was never run
-- `ffmpeg` is not installed or not on your `PATH`
 - an episode folder is missing either `video.mp4` or `data.parquet`
 - the MP4 frame count does not match the Parquet row count
 
@@ -133,6 +132,16 @@ Fixes:
 - avoid partial browser downloads for multi-GB model files
 - verify the local file size before trying again
 
+## `smolvla_policy.drive` fails with missing LeRobot / safetensors imports
+
+Install the dedicated local runtime extras:
+
+```bash
+pip install -r requirements-smolvla.txt
+```
+
+`requirements-export.txt` is only for LeRobot export. Local SmolVLA driving needs the fuller runtime stack.
+
 ## `smolvla_policy.drive` loads but the robot barely moves
 
 Common causes:
@@ -147,6 +156,11 @@ Typical tuning knobs:
 - increase `--omega-cap`
 - reduce `--smoothing`
 - keep `--min-vy 0` unless you really want forced sideways motion
+
+If your checkpoint was trained from an export that used a non-default state contract, keep the runtime state mode aligned too:
+
+- export `--state-source zeros` -> drive with `--state-mode zeros`
+- export `--state-source none` -> use a checkpoint that does not expect `observation.state`
 
 ## `torchcodec is not available ... falling back to pyav`
 

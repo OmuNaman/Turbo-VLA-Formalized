@@ -48,6 +48,8 @@ After launch:
 The VLA and intent-conditioned CNN recorders both show:
 
 - the built-in task list from `tasks.py`
+  VLA uses `DEFAULT_TASKS`
+  Intent-CNN uses `DEFAULT_INTENT_CNN_TASKS`
 - one extra option: `Custom task...`
 
 If a student selects `Custom task...`:
@@ -61,7 +63,7 @@ This keeps the default classroom task list simple while still allowing one-off p
 
 ## What Gets Saved
 
-The client creates a fresh timestamped session folder every time you run it.
+The client creates a fresh timestamped session folder by default, or resumes a named session if you pass `--session-name`.
 
 Example layout:
 
@@ -107,15 +109,21 @@ This recorder saves:
 
 That avoids leaking the answer into the model input.
 
-## No Overwrite Behavior
+## New Sessions vs Resume
 
-Each run creates a new folder named like `session_YYYYMMDD_HHMMSS`.
+By default each run creates a new folder named like `session_YYYYMMDD_HHMMSS`.
 
 That means:
 
 - old recordings stay untouched
 - you can compare sessions later
 - students do not lose data by starting a new run
+
+If you pass `--session-name`, the client resumes that session instead:
+
+- accepted episodes keep their saved `task_index` ordering
+- raw telemetry appends to the existing backup
+- new custom tasks are appended after the already-saved task list
 
 ## Export to LeRobot
 

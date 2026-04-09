@@ -13,7 +13,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset", default="turbopi_nav",
                         help="Dataset name for the VLA recorder")
     parser.add_argument("--cnn-dataset", default="turbopi_cnn",
-                        help="Dataset name for the CNN recorder")
+                        help="Dataset name for the legacy no-language CNN recorder")
     parser.add_argument("--intent-cnn-dataset", default="turbopi_intent_cnn",
                         help="Dataset name for the language-intent CNN recorder")
     parser.add_argument("--repo-id", default="<HF_DATASET_REPO>")
@@ -25,11 +25,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--session-name", default=None,
                         help="Resume or force a specific session folder name under the chosen dataset")
     parser.add_argument("--tasks", nargs="+", default=None,
-                        help="Custom VLA task list (overrides defaults)")
+                        help="Custom task list for the VLA or intent-conditioned CNN recorder")
     parser.add_argument("--mode", choices=["launcher", "cnn", "vla"], default="launcher")
-    parser.add_argument("--cnn-intent", choices=["language", "no-language"], default=None)
+    parser.add_argument("--cnn-intent", choices=["language", "no-language"], default=None,
+                        help=argparse.SUPPRESS)
     parser.add_argument("--cnn-task", default=None,
-                        help="Internal CNN task selector; public mode uses dataset-recording")
+                        help=argparse.SUPPRESS)
     return parser
 
 

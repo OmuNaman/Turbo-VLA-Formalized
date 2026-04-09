@@ -424,6 +424,7 @@ def main() -> None:
         "task_to_index": train_dataset.task_to_index,
         "dataset_root": str(episodes_dir),
         "run_dir": str(run_dir),
+        "huber_delta": float(args.huber_delta),
     }
 
     try:

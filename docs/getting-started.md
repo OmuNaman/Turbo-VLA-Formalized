@@ -123,6 +123,11 @@ If a student chooses `Custom task...`, the typed task:
 
 That means students can mix built-in tasks and one-off tasks without changing `tasks.py` first.
 
+Built-in defaults live in `tasks.py`:
+
+- `DEFAULT_TASKS` for the VLA recorder
+- `DEFAULT_INTENT_CNN_TASKS` for the intent-conditioned CNN recorder
+
 ## Where Recordings Are Saved
 
 The client writes new timestamped folders under:
@@ -141,7 +146,7 @@ data/turbopi_intent_cnn/
 `-- episodes/session_20260401_101500/
 ```
 
-Each run gets its own `session_YYYYMMDD_HHMMSS` folder, so old recordings stay untouched.
+Each run gets its own `session_YYYYMMDD_HHMMSS` folder by default, so old recordings stay untouched. If you pass `--session-name <NAME>`, the client resumes that named session instead of creating a new one.
 
 ## Train the Intent-CNN Policy
 
@@ -209,6 +214,29 @@ Helpful notes:
 - if one episode is clearly bad, delete that episode folder before exporting
 - LeRobot often stores exported frames as chunked dataset videos rather than one MP4 per episode
 
+## Drive a Fine-Tuned SmolVLA Checkpoint
+
+Install the local SmolVLA runtime extras:
+
+```bash
+pip install -r requirements-smolvla.txt
+```
+
+Then drive:
+
+```bash
+python -m smolvla_policy.drive \
+  --checkpoint <PRETRAINED_MODEL_DIR> \
+  --task "go left" \
+  --robot-ip <ROBOT_IP> \
+  --device cuda
+```
+
+If you exported with a non-default state contract, keep inference aligned:
+
+- export `--state-source zeros` -> drive with `--state-mode zeros`
+- export `--state-source none` -> use a checkpoint that does not expect `observation.state`
+
 ## Useful Flags
 
 Shorter collection run:
@@ -237,4 +265,9 @@ python scripts/export_lerobot.py --help
 
 ## Change the Built-In Tasks
 
-The built-in task list lives in `tasks.py`. Edit `DEFAULT_TASKS` if you want a different classroom default, but students can now also create one-off tasks during recording without modifying the code first.
+The built-in task defaults live in `tasks.py`:
+
+- edit `DEFAULT_TASKS` for the VLA recorder
+- edit `DEFAULT_INTENT_CNN_TASKS` for the intent-conditioned CNN recorder
+
+Students can still create one-off tasks during recording without modifying the code first.

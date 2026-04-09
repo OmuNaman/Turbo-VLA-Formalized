@@ -185,4 +185,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(
+        "The direct `python -m loop_cnn.drive` entrypoint is deprecated. "
+        "Use `python -m cnn_policy.drive` instead."
+    )

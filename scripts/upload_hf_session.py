@@ -15,8 +15,15 @@ from pathlib import Path
 from typing import Iterable
 
 import pyarrow.parquet as pq
-from huggingface_hub import HfApi, login
-from huggingface_hub.utils import HfHubHTTPError
+try:
+    from huggingface_hub import HfApi, login
+    from huggingface_hub.utils import HfHubHTTPError
+except ImportError:  # pragma: no cover - optional dependency
+    HfApi = None
+    HfHubHTTPError = Exception
+
+    def login(*args, **kwargs):  # type: ignore[no-redef]
+        raise RuntimeError("huggingface_hub is not installed")
 
 try:
     import tkinter as tk
@@ -30,8 +37,7 @@ except ImportError:  # pragma: no cover - platform dependent
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_EPISODES_ROOT = REPO_ROOT / "data" / "turbopi_cnn" / "episodes"
-LEGACY_EPISODES_ROOT = REPO_ROOT / "data" / "turbopi_cnn_loop" / "episodes"
+DEFAULT_EPISODES_ROOT = REPO_ROOT / "data"
 
 
 @dataclass(frozen=True)
@@ -45,7 +51,8 @@ class SessionSummary:
     episode_count: int
     frame_count: int
     duration_s: float
-    directions: tuple[str, ...]
+    session_fps: float
+    labels: tuple[str, ...]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,7 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Pick one recorded session and upload it to a Hugging Face dataset repo."
     )
-    parser.add_argument("--episodes-root", default=str(DEFAULT_EPISODES_ROOT))
+    parser.add_argument(
+        "--episodes-root",
+        default=str(DEFAULT_EPISODES_ROOT),
+        help="Path to a data directory, dataset directory, or episodes directory to scan",
+    )
     parser.add_argument("--session", default=None, help="Optional session name to preselect in CLI mode")
     parser.add_argument("--namespace", default=None, help="Hugging Face namespace/user or org")
     parser.add_argument("--repo-name", default=None, help="Dataset repo name. Defaults to the selected session name")
@@ -65,13 +76,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def resolve_episodes_root(path: Path) -> Path:
-    """Prefer the new CNN dataset root but transparently support the legacy one."""
-    if path.exists():
-        return path
-    if path == DEFAULT_EPISODES_ROOT and LEGACY_EPISODES_ROOT.exists():
-        return LEGACY_EPISODES_ROOT
-    return path
+def ensure_hf_hub() -> None:
+    """Fail early with a clear install hint when Hugging Face helpers are unavailable."""
+    if HfApi is None:
+        raise RuntimeError(
+            "huggingface_hub is required for session upload. Install it with "
+            "`pip install huggingface_hub` or `pip install -r requirements-laptop.txt`."
+        )
+
+
+def discover_episode_roots(path: Path) -> list[Path]:
+    """Expand a data dir, dataset dir, or episodes dir into concrete episodes roots."""
+    path = Path(path)
+    if not path.exists():
+        return []
+
+    if path.name == "episodes":
+        return [path]
+    if (path / "episodes").exists():
+        return [path / "episodes"]
+
+    roots: list[Path] = []
+    for child in sorted(path.iterdir()):
+        candidate = child / "episodes"
+        if candidate.exists() and candidate.is_dir():
+            roots.append(candidate)
+    return roots
 
 
 def sanitize_repo_name(value: str) -> str:
@@ -88,70 +118,76 @@ def count_parquet_rows(path: Path) -> int:
 
 def discover_sessions(episodes_root: Path) -> list[SessionSummary]:
     """Discover recorded sessions beneath one episodes root."""
-    episodes_root = resolve_episodes_root(Path(episodes_root))
-    if not episodes_root.exists():
-        return []
-
-    dataset_name = episodes_root.parent.name
-    raw_root = episodes_root.parent / "raw"
     sessions: list[SessionSummary] = []
 
-    for session_dir in sorted(path for path in episodes_root.iterdir() if path.is_dir()):
-        episode_dirs = sorted(
-            path
-            for path in session_dir.iterdir()
-            if path.is_dir() and path.name.startswith("episode_")
-        )
-        if not episode_dirs:
-            continue
+    for concrete_root in discover_episode_roots(Path(episodes_root)):
+        dataset_name = concrete_root.parent.name
+        raw_root = concrete_root.parent / "raw"
 
-        frame_count = 0
-        valid_episodes = 0
-        directions: list[str] = []
-        for episode_dir in episode_dirs:
-            parquet_path = episode_dir / "data.parquet"
-            if not parquet_path.exists():
-                continue
-            frame_count += count_parquet_rows(parquet_path)
-            valid_episodes += 1
-
-            info_path = episode_dir / "episode_info.json"
-            if info_path.exists():
-                try:
-                    info = json.loads(info_path.read_text(encoding="utf-8"))
-                    label = str(
-                        info.get("direction")
-                        or info.get("task_name")
-                        or info.get("task")
-                        or ""
-                    ).strip()
-                    if label:
-                        directions.append(label)
-                except json.JSONDecodeError:
-                    pass
-
-        if valid_episodes == 0:
-            continue
-
-        raw_dir = raw_root / session_dir.name
-        sessions.append(
-            SessionSummary(
-                dataset_name=dataset_name,
-                session_name=session_dir.name,
-                session_dir=session_dir,
-                raw_dir=raw_dir if raw_dir.exists() else None,
-                episode_count=valid_episodes,
-                frame_count=frame_count,
-                duration_s=frame_count / 10.0,
-                directions=tuple(sorted(set(directions)) or ["unknown"]),
+        for session_dir in sorted(path for path in concrete_root.iterdir() if path.is_dir()):
+            episode_dirs = sorted(
+                path
+                for path in session_dir.iterdir()
+                if path.is_dir() and path.name.startswith("episode_")
             )
-        )
+            if not episode_dirs:
+                continue
+
+            session_info_path = session_dir / "session_info.json"
+            try:
+                session_info = json.loads(session_info_path.read_text(encoding="utf-8"))
+            except Exception:
+                session_info = {}
+            session_fps = float(session_info.get("fps", 10.0) or 10.0)
+
+            frame_count = 0
+            valid_episodes = 0
+            labels: list[str] = []
+            for episode_dir in episode_dirs:
+                parquet_path = episode_dir / "data.parquet"
+                if not parquet_path.exists():
+                    continue
+                frame_count += count_parquet_rows(parquet_path)
+                valid_episodes += 1
+
+                info_path = episode_dir / "episode_info.json"
+                if info_path.exists():
+                    try:
+                        info = json.loads(info_path.read_text(encoding="utf-8"))
+                        label = str(
+                            info.get("task_name")
+                            or info.get("task")
+                            or info.get("direction")
+                            or ""
+                        ).strip()
+                        if label:
+                            labels.append(label)
+                    except json.JSONDecodeError:
+                        pass
+
+            if valid_episodes == 0:
+                continue
+
+            raw_dir = raw_root / session_dir.name
+            sessions.append(
+                SessionSummary(
+                    dataset_name=dataset_name,
+                    session_name=session_dir.name,
+                    session_dir=session_dir,
+                    raw_dir=raw_dir if raw_dir.exists() else None,
+                    episode_count=valid_episodes,
+                    frame_count=frame_count,
+                    duration_s=frame_count / max(session_fps, 1e-6),
+                    session_fps=session_fps,
+                    labels=tuple(sorted(set(labels)) or ["unknown"]),
+                )
+            )
     return sessions
 
 
-def format_directions(directions: Iterable[str]) -> str:
-    """Render the unique direction labels in one short string."""
-    return ", ".join(directions)
+def format_labels(labels: Iterable[str]) -> str:
+    """Render the unique task labels in one short string."""
+    return ", ".join(labels)
 
 
 def describe_session(summary: SessionSummary) -> str:
@@ -159,7 +195,7 @@ def describe_session(summary: SessionSummary) -> str:
     return (
         f"{summary.session_name} | episodes={summary.episode_count} | "
         f"frames={summary.frame_count} | duration={summary.duration_s:.1f}s | "
-        f"directions={format_directions(summary.directions)}"
+        f"tasks={format_labels(summary.labels)}"
     )
 
 
@@ -190,8 +226,8 @@ def repo_card_text(summary: SessionSummary, repo_id: str, include_raw: bool) -> 
         - Session: `{summary.session_name}`
         - Accepted episodes: `{summary.episode_count}`
         - Accepted frames: `{summary.frame_count}`
-        - Approx duration at 10 Hz: `{summary.duration_s:.1f}s`
-        - Directions seen: `{format_directions(summary.directions)}`
+        - Approx duration at `{summary.session_fps:g} Hz`: `{summary.duration_s:.1f}s`
+        - Tasks seen: `{format_labels(summary.labels)}`
         - Raw backup: `{raw_note}`
 
         ## Layout
@@ -218,7 +254,8 @@ def build_manifest(summary: SessionSummary, repo_id: str, include_raw: bool) -> 
         "episode_count": summary.episode_count,
         "frame_count": summary.frame_count,
         "duration_s": summary.duration_s,
-        "directions": list(summary.directions),
+        "labels": list(summary.labels),
+        "session_fps": summary.session_fps,
         "include_raw": bool(include_raw and summary.raw_dir),
     }
 
@@ -327,7 +364,8 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
 
 def run_cli(args: argparse.Namespace) -> int:
     """Run the uploader in terminal mode."""
-    episodes_root = resolve_episodes_root(Path(args.episodes_root))
+    ensure_hf_hub()
+    episodes_root = Path(args.episodes_root)
     sessions = discover_sessions(episodes_root)
     if not sessions:
         print(f"No sessions found under {episodes_root}")
@@ -400,11 +438,12 @@ class SessionUploaderApp:
     def __init__(self, root: tk.Tk, args: argparse.Namespace):
         self.root = root
         self.args = args
+        ensure_hf_hub()
         self.api = HfApi()
         self.sessions: list[SessionSummary] = []
         self.auth_token = args.token.strip() if args.token else None
 
-        self.episodes_root_var = tk.StringVar(value=str(resolve_episodes_root(Path(args.episodes_root))))
+        self.episodes_root_var = tk.StringVar(value=str(Path(args.episodes_root)))
         self.namespace_var = tk.StringVar(value=args.namespace or "")
         self.repo_name_var = tk.StringVar(value=args.repo_name or "")
         self.private_var = tk.BooleanVar(value=bool(args.private))
@@ -451,7 +490,7 @@ class SessionUploaderApp:
         table_frame = ttk.LabelFrame(container, text="Recorded Sessions", padding=10)
         table_frame.pack(fill="both", expand=True, pady=(12, 0))
 
-        columns = ("dataset", "session", "episodes", "frames", "duration", "directions")
+        columns = ("dataset", "session", "episodes", "frames", "duration", "tasks")
         self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=16)
         headings = {
             "dataset": "Dataset",
@@ -459,7 +498,7 @@ class SessionUploaderApp:
             "episodes": "Episodes",
             "frames": "Frames",
             "duration": "Duration (s)",
-            "directions": "Directions",
+            "tasks": "Tasks",
         }
         widths = {
             "dataset": 130,
@@ -467,7 +506,7 @@ class SessionUploaderApp:
             "episodes": 80,
             "frames": 90,
             "duration": 100,
-            "directions": 160,
+            "tasks": 240,
         }
         for key in columns:
             self.tree.heading(key, text=headings[key])
@@ -513,7 +552,7 @@ class SessionUploaderApp:
 
     def refresh_sessions(self) -> None:
         """Reload the session table from the selected episodes root."""
-        episodes_root = resolve_episodes_root(Path(self.episodes_root_var.get()))
+        episodes_root = Path(self.episodes_root_var.get())
         self.sessions = discover_sessions(episodes_root)
 
         for item in self.tree.get_children():
@@ -530,7 +569,7 @@ class SessionUploaderApp:
                     session.episode_count,
                     session.frame_count,
                     f"{session.duration_s:.1f}",
-                    format_directions(session.directions),
+                    format_labels(session.labels),
                 ),
             )
 

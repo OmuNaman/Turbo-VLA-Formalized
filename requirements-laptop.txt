@@ -6,3 +6,4 @@ requests>=2.31
 Pillow>=10.0
 pynput>=1.7
 av>=12.0
+huggingface_hub>=1.4

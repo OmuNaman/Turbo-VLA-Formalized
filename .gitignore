@@ -18,6 +18,10 @@ downloaded_ckpt/
 turbopi_smolvla_intent_5k_pretrained_model/
 best.pt
 *.tar.gz
+*.safetensors
+pretrained_model/
+**/pretrained_model/
+*.pt
 
 # Tool caches
 .pytest_cache/

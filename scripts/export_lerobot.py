@@ -13,7 +13,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from config import ExportConfig
 from storage.lerobot_exporter import (
-    DEFAULT_IMAGE_KEY,
     STATE_SOURCE_CHOICES,
     export_lerobot_dataset,
 )
@@ -29,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-id", default=defaults.repo_id)
     parser.add_argument("--robot-type", default=defaults.robot_type)
     parser.add_argument("--fps", type=int, default=defaults.fps)
-    parser.add_argument("--image-key", default=DEFAULT_IMAGE_KEY)
+    parser.add_argument("--image-key", default=defaults.image_key)
     parser.add_argument(
         "--state-source",
         choices=sorted(STATE_SOURCE_CHOICES),
@@ -51,6 +50,10 @@ def derive_repo_id(episodes_dir: Path, output_dir: Path, requested_repo_id: str)
     if requested_repo_id != "<HF_DATASET_REPO>":
         return requested_repo_id
 
+    if episodes_dir.name.startswith("session_"):
+        dataset_name = episodes_dir.parent.parent.name or output_dir.parent.name or "turbopi"
+        return f"local/{dataset_name}_{episodes_dir.name}_lerobot"
+
     dataset_name = episodes_dir.parent.name or output_dir.parent.name or "turbopi"
     return f"local/{dataset_name}_lerobot"
 
@@ -63,6 +66,11 @@ def main() -> None:
     episodes_dir = Path(args.episodes_dir)
     output_dir = Path(args.output_dir)
     repo_id = derive_repo_id(episodes_dir, output_dir, args.repo_id)
+    if args.push_to_hub and repo_id.startswith("local/"):
+        raise ValueError(
+            "--push-to-hub requires a real Hugging Face dataset repo id, for example "
+            "'your-name/your-dataset'. Replace the placeholder --repo-id before pushing."
+        )
 
     summary = export_lerobot_dataset(
         episodes_dir=episodes_dir,

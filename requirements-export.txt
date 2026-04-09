@@ -3,3 +3,4 @@ lerobot
 pandas>=2.2
 pyarrow>=15.0
 av>=12.0
+huggingface_hub>=1.4

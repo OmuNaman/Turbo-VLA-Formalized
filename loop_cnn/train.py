@@ -527,4 +527,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(
+        "The direct `python -m loop_cnn.train` entrypoint is deprecated. "
+        "Use `python -m cnn_policy.train` instead."
+    )

@@ -1,6 +1,7 @@
 """Main recording session orchestrator for the 10 Hz teleop loop."""
 
 import json
+import shutil
 import sys
 import time
 from datetime import datetime
@@ -11,7 +12,7 @@ import numpy as np
 from config import RecordingConfig
 from storage.episode_writer import EpisodeWriter
 from storage.raw_writer import RawWriter
-from tasks import CUSTOM_TASK_LABEL, TaskManager, load_saved_tasks
+from tasks import CUSTOM_TASK_LABEL, TaskManager, build_task_manager
 from timing import FPSRegulator
 
 from .episode_manager import EpisodeManager
@@ -41,7 +42,10 @@ class RecordingSession:
 
     def __init__(self, config: RecordingConfig, tasks: TaskManager | None = None):
         self.config = config
-        self.tasks = tasks or TaskManager()
+
+        self.session_name = config.session_name or datetime.now().strftime("session_%Y%m%d_%H%M%S")
+        requested_tasks = list(tasks.tasks) if tasks is not None else None
+        self.tasks = build_task_manager(config.episodes_dir / self.session_name, requested_tasks)
 
         self.config.dataset_dir.mkdir(parents=True, exist_ok=True)
 
@@ -54,9 +58,10 @@ class RecordingSession:
             speed=config.teleop_speed,
             max_speed=config.max_duty,
         )
-        self.session_name = config.session_name or datetime.now().strftime("session_%Y%m%d_%H%M%S")
-        self.tasks.merge_tasks(load_saved_tasks(config.episodes_dir / self.session_name))
-        self.resume_state = inspect_saved_session(config.episodes_dir / self.session_name)
+        self.resume_state = inspect_saved_session(
+            config.episodes_dir / self.session_name,
+            config.raw_dir / self.session_name,
+        )
         self.episodes = EpisodeManager(
             start_episode_index=self.resume_state.next_episode_index,
             accepted_count=self.resume_state.accepted_count,
@@ -392,9 +397,24 @@ class RecordingSession:
             )
             return False
 
-        episode = self.episodes.accept_episode()
-        episode_dir = self.episode_writer.save_episode(episode)
-        self._write_episode_info(episode_dir=episode_dir, task=task, task_index=task_index, episode=episode)
+        episode = self.episodes.prepare_episode_for_save()
+        episode_dir: Path | None = None
+        try:
+            episode_dir = self.episode_writer.save_episode(episode)
+            self._write_episode_info(
+                episode_dir=episode_dir,
+                task=task,
+                task_index=task_index,
+                episode=episode,
+            )
+        except Exception as exc:
+            if episode_dir is not None:
+                shutil.rmtree(episode_dir, ignore_errors=True)
+            self.episodes.finish_episode_save(episode, saved=False)
+            print(f"  x Failed to save episode {ep_idx}: {exc}\n")
+            return False
+
+        self.episodes.finish_episode_save(episode, saved=True)
         print(
             f"  ok Episode {ep_idx} accepted "
             f"({frame_count} frames, {frame_count / self.config.fps:.1f}s)\n"

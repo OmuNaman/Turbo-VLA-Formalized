@@ -73,18 +73,26 @@ class EpisodeManager:
             )
         )
 
-    def accept_episode(self) -> EpisodeBuffer:
-        """Accept the current episode and return it for saving."""
+    def prepare_episode_for_save(self) -> EpisodeBuffer:
+        """Freeze the current episode and return it for saving."""
         if self.current is None:
-            raise RuntimeError("No active episode to accept.")
+            raise RuntimeError("No active episode to save.")
 
         self.current.status = "accepted"
         episode = self.current
         self.current = None
-        self.episode_count += 1
-        self.accepted_count += 1
-        self.total_frames += len(episode.frames)
         return episode
+
+    def finish_episode_save(self, episode: EpisodeBuffer, *, saved: bool) -> None:
+        """Advance counters after an attempted save.
+
+        We always advance the episode index once an episode recording is over, but only count it
+        as accepted after the files were successfully written to disk.
+        """
+        self.episode_count += 1
+        if saved:
+            self.accepted_count += 1
+            self.total_frames += len(episode.frames)
 
     def discard_episode(self) -> None:
         """Discard the current episode, freeing memory."""

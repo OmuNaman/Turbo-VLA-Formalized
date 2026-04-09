@@ -83,13 +83,15 @@ def main() -> None:
     if loader is None:
         raise RuntimeError(f"No sessions available for split '{args.split}'.")
 
-    criterion = nn.HuberLoss(delta=1.0)
+    huber_delta = float(payload.get("extra", {}).get("huber_delta", 1.0))
+    criterion = nn.HuberLoss(delta=huber_delta)
     metrics = evaluate_model(model, loader, criterion, device)
     result = {
         "checkpoint": str(args.checkpoint),
         "split": args.split,
         "device": str(device),
         "task_names": task_names,
+        "huber_delta": huber_delta,
         "metrics": metrics,
         "checkpoint_epoch": payload.get("epoch"),
     }

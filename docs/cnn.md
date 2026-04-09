@@ -32,7 +32,7 @@ python -m client.cli --robot-ip <ROBOT_IP>
 
 During recording, students can either:
 
-- pick one of the built-in tasks
+- pick one of the built-in tasks from `tasks.py::DEFAULT_INTENT_CNN_TASKS`
 - or choose `Custom task...` and type a new task string
 
 That typed task is saved like any other task and becomes part of the session vocabulary.
@@ -152,6 +152,8 @@ You can also use `--task-index`, but `--task` is usually easier for students.
 python scripts/upload_hf_session.py
 ```
 
+The uploader scans the local `data/` tree by default, so it can find sessions under `data/turbopi_intent_cnn/` without extra flags.
+
 If you prefer the terminal:
 
 ```bash
@@ -176,7 +178,7 @@ python -m client.cli --robot-ip <ROBOT_IP>
   -> no-language loop mode (legacy)
 ```
 
-The legacy training/inference package is `cnn_policy/`.
+The legacy training/inference package is `cnn_policy/`. Its underlying implementation still lives in `loop_cnn/`, but `cnn_policy/` is the public compatibility wrapper.
 
 ## Common Issues
 

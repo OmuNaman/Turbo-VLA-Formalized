@@ -81,20 +81,44 @@ def frame_to_tensor(frame: np.ndarray, *, image_width: int, image_height: int) -
     return TF.to_tensor(image)
 
 
-def resolve_task_selection(task_names: list[str], task_name: str | None, task_index: int | None) -> tuple[int, str]:
+def resolve_task_selection(
+    task_names: list[str],
+    task_name: str | None,
+    task_index: int | None,
+    *,
+    task_vocab_size: int,
+) -> tuple[int, str]:
     """Resolve the requested task string/index to a stable task id."""
     if task_name is not None:
+        if not task_names:
+            raise ValueError(
+                "This checkpoint does not store task names. Pass --task-index instead."
+            )
         if task_name not in task_names:
             raise ValueError(f"Unknown task '{task_name}'. Available: {task_names}")
         return task_names.index(task_name), task_name
 
     if task_index is not None:
-        if not 0 <= task_index < len(task_names):
-            raise ValueError(f"Task index {task_index} out of range 0-{len(task_names) - 1}")
-        return task_index, task_names[task_index]
+        max_index = len(task_names) - 1 if task_names else task_vocab_size - 1
+        if not 0 <= task_index <= max_index:
+            raise ValueError(f"Task index {task_index} out of range 0-{max_index}")
+        label = task_names[task_index] if task_names else f"task_{task_index}"
+        return task_index, label
 
     if not task_names:
-        raise ValueError("No task vocabulary was found in the checkpoint. Pass --task-index explicitly.")
+        if task_vocab_size < 1:
+            raise ValueError("No task vocabulary was found in the checkpoint. Pass --task-index explicitly.")
+        print(f"\n  This checkpoint stores {task_vocab_size} task ids but no task names.")
+        while True:
+            try:
+                choice = input(f"  Select task index [0-{task_vocab_size - 1}]: ").strip()
+                index = int(choice)
+            except ValueError:
+                print("  Enter a number.")
+                continue
+            if 0 <= index < task_vocab_size:
+                return index, f"task_{index}"
+            print(f"  Invalid. Choose 0-{task_vocab_size - 1}")
 
     print("\n  Available tasks in this checkpoint:")
     for index, name in enumerate(task_names):
@@ -120,7 +144,12 @@ def main() -> None:
     model.eval()
 
     task_names = list(payload.get("extra", {}).get("task_names") or [])
-    task_index, task_name = resolve_task_selection(task_names, args.task, args.task_index)
+    task_index, task_name = resolve_task_selection(
+        task_names,
+        args.task,
+        args.task_index,
+        task_vocab_size=int(model.config.task_vocab_size),
+    )
 
     image_width = int(model.config.image_width)
     image_height = int(model.config.image_height)

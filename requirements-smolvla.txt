@@ -1,0 +1,6 @@
+# Extra dependencies for local SmolVLA inference and checkpoint inspection
+lerobot[smolvla]
+requests>=2.31
+Pillow>=10.0
+av>=12.0
+safetensors>=0.4

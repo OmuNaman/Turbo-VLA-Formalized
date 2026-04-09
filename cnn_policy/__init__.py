@@ -1,3 +1,3 @@
-"""Public CNN policy package that wraps the existing training stack."""
+"""Public compatibility package for the legacy no-language CNN workflow."""
 
-from loop_cnn import *  # noqa: F401,F403
+__all__: list[str] = []

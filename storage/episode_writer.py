@@ -1,6 +1,7 @@
 """Episode writer that saves accepted episodes as MP4 plus Parquet."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pandas as pd
@@ -28,13 +29,23 @@ class EpisodeWriter:
     def save_episode(self, episode) -> Path:
         """Save an accepted EpisodeBuffer to disk."""
         ep_dir = self.episodes_dir / f"episode_{episode.episode_index:06d}"
-        ep_dir.mkdir(parents=True, exist_ok=True)
+        tmp_dir = self.episodes_dir / f".episode_{episode.episode_index:06d}.tmp"
+        if ep_dir.exists():
+            raise FileExistsError(f"Episode directory already exists: {ep_dir}")
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        tmp_dir.mkdir(parents=True, exist_ok=False)
 
-        video_path = ep_dir / "video.mp4"
-        parquet_path = ep_dir / "data.parquet"
+        video_path = tmp_dir / "video.mp4"
+        parquet_path = tmp_dir / "data.parquet"
 
-        self._save_video(episode.frames, video_path)
-        self._save_parquet(episode, parquet_path)
+        try:
+            self._save_video(episode.frames, video_path)
+            self._save_parquet(episode, parquet_path)
+            tmp_dir.replace(ep_dir)
+        except Exception:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise
 
         print(
             f"  [EpisodeWriter] Saved episode {episode.episode_index} "

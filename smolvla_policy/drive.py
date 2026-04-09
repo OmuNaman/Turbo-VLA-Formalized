@@ -6,6 +6,7 @@ import argparse
 import signal
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +25,19 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Path to either the downloaded outer folder or the inner pretrained_model folder")
     parser.add_argument("--task", default=None,
                         help="Language task prompt, for example 'go left' or 'go right'")
+    parser.add_argument(
+        "--image-key",
+        default=None,
+        help="Optional live observation image key override, for example observation.images.front",
+    )
     parser.add_argument("--vlm-assets", default=None,
                         help="Optional local path or HF model id for SmolVLM tokenizer/config assets")
+    parser.add_argument(
+        "--state-mode",
+        choices=("auto", "previous_action", "zeros", "none"),
+        default="auto",
+        help="How to populate observation.state at runtime. 'auto' follows the checkpoint schema.",
+    )
     parser.add_argument("--loop-hz", type=float, default=5.0)
     parser.add_argument("--smoothing", type=float, default=0.65,
                         help="EMA factor applied in normalized action space")
@@ -46,8 +58,25 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Minimum absolute vy command to send when vy is nonzero")
     parser.add_argument("--min-omega", type=float, default=0.0,
                         help="Minimum absolute omega command to send when omega is nonzero")
+    parser.add_argument(
+        "--recording-max-duty",
+        type=float,
+        default=80.0,
+        help="Duty-cycle range used when the training data normalized state/action to [-1, 1]",
+    )
     parser.add_argument("--device", default="auto")
     return parser
+
+
+@dataclass(frozen=True)
+class RuntimeObservationLayout:
+    """Observation keys expected by the fine-tuned policy at inference time."""
+
+    batch_image_keys: tuple[str, ...]
+    live_image_key: str
+    fill_zero_images: bool
+    state_key: str | None
+    state_dim: int
 
 
 def resolve_device(requested: str) -> torch.device:
@@ -197,6 +226,11 @@ def state_to_tensor(state: np.ndarray) -> torch.Tensor:
     return torch.from_numpy(np.ascontiguousarray(state)).to(torch.float32)
 
 
+def normalize_executed_action(action: np.ndarray, duty_range: float) -> np.ndarray:
+    """Convert sent robot commands back into the normalized action/state space."""
+    return np.clip(np.asarray(action, dtype=np.float32) / max(duty_range, 1e-6), -1.0, 1.0)
+
+
 def action_to_numpy(action: Any) -> np.ndarray:
     """Convert a postprocessed action object into a flat float32 vector."""
     if isinstance(action, torch.Tensor):
@@ -218,6 +252,144 @@ def prepare_policy_batch(batch: dict[str, Any], device: torch.device) -> dict[st
         else:
             prepared[key] = value
     return prepared
+
+
+def _feature_kind(feature: Any) -> str:
+    """Read a LeRobot feature type as a stable upper-case string."""
+    if isinstance(feature, dict):
+        value = feature.get("type")
+    else:
+        value = getattr(feature, "type", None)
+    if value is None:
+        return ""
+    raw = getattr(value, "value", value)
+    return str(raw).upper()
+
+
+def _feature_shape(feature: Any) -> tuple[int, ...]:
+    """Read a LeRobot feature shape tuple."""
+    if isinstance(feature, dict):
+        value = feature.get("shape")
+    else:
+        value = getattr(feature, "shape", None)
+    if value is None:
+        return ()
+    return tuple(int(item) for item in value)
+
+
+def infer_runtime_observation_layout(
+    train_cfg: Any,
+    *,
+    image_key_override: str | None,
+) -> RuntimeObservationLayout:
+    """Infer which image/state keys the runtime should provide to the processor."""
+    input_features = getattr(train_cfg.policy, "input_features", {}) or {}
+    visual_features = [
+        name
+        for name, feature in input_features.items()
+        if ".images." in name or _feature_kind(feature) == "VISUAL"
+    ]
+    state_key = next(
+        (
+            name
+            for name, feature in input_features.items()
+            if name == "observation.state" or _feature_kind(feature) == "STATE"
+        ),
+        None,
+    )
+    output_features = getattr(train_cfg.policy, "output_features", {}) or {}
+    action_shape = _feature_shape(output_features.get("action", {}))
+    state_dim = int(np.prod(action_shape)) if action_shape else 3
+
+    if image_key_override:
+        if image_key_override in visual_features:
+            return RuntimeObservationLayout(
+                batch_image_keys=tuple(visual_features),
+                live_image_key=image_key_override,
+                fill_zero_images=len(visual_features) > 1,
+                state_key=state_key,
+                state_dim=state_dim,
+            )
+        return RuntimeObservationLayout(
+            batch_image_keys=(image_key_override,),
+            live_image_key=image_key_override,
+            fill_zero_images=False,
+            state_key=state_key,
+            state_dim=state_dim,
+        )
+
+    rename_map = getattr(train_cfg, "rename_map", {}) or {}
+    inverse_rename = {str(dst): str(src) for src, dst in rename_map.items()}
+
+    if visual_features:
+        primary_visual = visual_features[0]
+        if primary_visual in inverse_rename:
+            live_image_key = inverse_rename[primary_visual]
+            return RuntimeObservationLayout(
+                batch_image_keys=(live_image_key,),
+                live_image_key=live_image_key,
+                fill_zero_images=False,
+                state_key=state_key,
+                state_dim=state_dim,
+            )
+        return RuntimeObservationLayout(
+            batch_image_keys=tuple(visual_features),
+            live_image_key=primary_visual,
+            fill_zero_images=len(visual_features) > 1,
+            state_key=state_key,
+            state_dim=state_dim,
+        )
+
+    return RuntimeObservationLayout(
+        batch_image_keys=("observation.images.front",),
+        live_image_key="observation.images.front",
+        fill_zero_images=False,
+        state_key=state_key,
+        state_dim=state_dim,
+    )
+
+
+def resolve_state_mode(requested: str, layout: RuntimeObservationLayout) -> str:
+    """Resolve the effective runtime state behavior from CLI choice plus checkpoint schema."""
+    if requested == "auto":
+        return "previous_action" if layout.state_key is not None else "none"
+    if requested == "none" and layout.state_key is not None:
+        raise ValueError(
+            "This checkpoint expects observation.state, so --state-mode none would not match training."
+        )
+    if requested in {"previous_action", "zeros"} and layout.state_key is None:
+        raise ValueError(
+            "This checkpoint does not expect observation.state, so the requested state mode is incompatible."
+        )
+    return requested
+
+
+def build_runtime_batch(
+    frame: np.ndarray,
+    *,
+    task: str,
+    previous_action: np.ndarray,
+    layout: RuntimeObservationLayout,
+    state_mode: str,
+) -> dict[str, Any]:
+    """Build the raw observation dict that is passed into the LeRobot processor pipeline."""
+    live_image = frame_to_tensor(frame)
+    batch: dict[str, Any] = {}
+
+    for key in layout.batch_image_keys:
+        if key == layout.live_image_key:
+            batch[key] = live_image
+        elif layout.fill_zero_images:
+            batch[key] = torch.zeros_like(live_image)
+
+    if layout.state_key is not None:
+        if state_mode == "previous_action":
+            batch[layout.state_key] = state_to_tensor(previous_action.copy())
+        elif state_mode == "zeros":
+            batch[layout.state_key] = torch.zeros(layout.state_dim, dtype=torch.float32)
+
+    batch["task"] = task
+    return batch
 
 
 def load_policy_runtime(
@@ -270,6 +442,8 @@ def main() -> None:
         device=device,
         vlm_assets=args.vlm_assets,
     )
+    layout = infer_runtime_observation_layout(train_cfg, image_key_override=args.image_key)
+    state_mode = resolve_state_mode(args.state_mode, layout)
 
     client = RobotClient(robot_url=robot_url, timeout=1.0, max_retries=2)
     if not client.is_connected():
@@ -290,6 +464,8 @@ def main() -> None:
     print(f"  Task: {task}")
     print(f"  Steps trained: {train_cfg.steps}")
     print(f"  VLM assets: {args.vlm_assets or train_cfg.policy.vlm_model_name}")
+    print(f"  Image key: {layout.live_image_key}")
+    print(f"  State mode: {state_mode}")
     print(f"  Battery: {health.get('battery_mv', '?')}mV")
     print(f"  Camera: {'OK' if health.get('camera_ok') else 'FAIL'}")
     print()
@@ -313,11 +489,13 @@ def main() -> None:
             loop_start = time.monotonic()
             frame, _, _ = client.get_frame_rgb()
 
-            batch = {
-                "observation.images.front": frame_to_tensor(frame),
-                "observation.state": state_to_tensor(previous_action.copy()),
-                "task": task,
-            }
+            batch = build_runtime_batch(
+                frame,
+                task=task,
+                previous_action=previous_action,
+                layout=layout,
+                state_mode=state_mode,
+            )
             processed = prepare_policy_batch(preprocessor(batch), device)
 
             with torch.no_grad():
@@ -338,7 +516,6 @@ def main() -> None:
                 min_vy=args.min_vy,
                 min_omega=args.min_omega,
             )
-            previous_action = smoothed
 
             try:
                 client.send_velocity(float(safe_action[0]), float(safe_action[1]), float(safe_action[2]))
@@ -346,6 +523,8 @@ def main() -> None:
                 print(f"\n  [WARN] Failed to send velocity command: {exc}")
                 client.stop()
                 break
+
+            previous_action = normalize_executed_action(safe_action, args.recording_max_duty)
 
             print(
                 f"\r  task='{task}' pred=[{model_action[0]:6.3f},{model_action[1]:6.3f},{model_action[2]:6.3f}] "

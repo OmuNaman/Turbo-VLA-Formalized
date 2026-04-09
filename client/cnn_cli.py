@@ -5,19 +5,15 @@ from __future__ import annotations
 from argparse import Namespace
 from pathlib import Path
 
-DEFAULT_INTENT_CNN_TASKS = [
-    "go left",
-    "go right",
-    "go forward",
-    "go backward",
-]
+from tasks import DEFAULT_INTENT_CNN_TASKS, TaskManager
+
+
 def _run_cnn_dataset_recording(args: Namespace) -> None:
     """Run the no-language CNN dataset recorder."""
     from config import RecordingConfig
 
     from .cnn_loop_session import CNNLoopSession
 
-    episode_time = args.episode_time if args.episode_time != 30.0 else 60.0
     config = RecordingConfig(
         robot_ip=args.robot_ip,
         robot_port=args.robot_port,
@@ -25,7 +21,7 @@ def _run_cnn_dataset_recording(args: Namespace) -> None:
         repo_id=args.repo_id,
         fps=args.fps,
         num_episodes=args.episodes,
-        episode_time_s=episode_time,
+        episode_time_s=args.episode_time,
         teleop_speed=args.speed,
         data_dir=Path(args.data_dir),
         session_name=args.session_name,
@@ -38,12 +34,9 @@ def _run_cnn_language_recording(args: Namespace) -> None:
     """Run the language-conditioned CNN recorder."""
     from config import RecordingConfig
 
-    from tasks import TaskManager
-
     from .cnn_language_session import CNNLanguageSession
 
     dataset_name = getattr(args, "intent_cnn_dataset", None) or args.cnn_dataset
-    episode_time = args.episode_time if args.episode_time != 30.0 else 60.0
     config = RecordingConfig(
         robot_ip=args.robot_ip,
         robot_port=args.robot_port,
@@ -51,7 +44,7 @@ def _run_cnn_language_recording(args: Namespace) -> None:
         repo_id=args.repo_id,
         fps=args.fps,
         num_episodes=args.episodes,
-        episode_time_s=episode_time,
+        episode_time_s=args.episode_time,
         teleop_speed=args.speed,
         data_dir=Path(args.data_dir),
         session_name=args.session_name,
@@ -85,5 +78,8 @@ def run_from_args(args: Namespace, prompt_menu) -> None:
             return
         args.cnn_task = "dataset-recording"
 
-    if args.cnn_task in {"dataset-recording", "circular-loop"}:
+    if args.cnn_task == "dataset-recording":
         _run_cnn_dataset_recording(args)
+        return
+
+    raise ValueError(f"Unsupported legacy CNN task selector: {args.cnn_task}")

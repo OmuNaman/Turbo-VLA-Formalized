@@ -17,6 +17,13 @@ DEFAULT_TASKS = [
     "go behind the box",
 ]
 
+DEFAULT_INTENT_CNN_TASKS = [
+    "go left",
+    "go right",
+    "go forward",
+    "go backward",
+]
+
 CUSTOM_TASK_LABEL = "Custom task..."
 TASK_MAPPING_FILENAME = "tasks.json"
 
@@ -48,6 +55,20 @@ def load_saved_tasks(path: Path) -> list[str]:
                 ordered.append((index, task))
         return [task for _, task in sorted(ordered, key=lambda item: item[0])]
     return []
+
+
+def build_task_manager(session_dir: Path, tasks: list[str] | None = None) -> "TaskManager":
+    """Build a task manager that preserves any saved session ordering.
+
+    When resuming a session we must keep the existing task_index mapping stable, then append
+    any newly requested defaults or CLI-provided tasks after the saved ordering.
+    """
+    requested = DEFAULT_TASKS if tasks is None else tasks
+    saved = load_saved_tasks(session_dir)
+    manager = TaskManager(saved if saved else requested)
+    if saved:
+        manager.merge_tasks(requested)
+    return manager
 
 
 class TaskManager:
