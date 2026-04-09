@@ -15,7 +15,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cnn-dataset", default="turbopi_cnn",
                         help="Dataset name for the legacy no-language CNN recorder")
     parser.add_argument("--intent-cnn-dataset", default="turbopi_intent_cnn",
-                        help="Dataset name for the language-intent CNN recorder")
+                        help="Dataset name for the task-conditioned Intent-CNN / ACT-Intent recorder")
     parser.add_argument("--repo-id", default="<HF_DATASET_REPO>")
     parser.add_argument("--fps", type=int, default=10)
     parser.add_argument("--episodes", type=int, default=50)

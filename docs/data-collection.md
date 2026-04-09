@@ -5,7 +5,7 @@ This repo records teleoperated episodes from a laptop while the TurboPi runs the
 The official student-facing recording paths are:
 
 - `VLA-based`: task-conditioned recording for LeRobot export and SmolVLA
-- `CNN-based -> intent-conditioned (recommended)`: task-conditioned recording for `intent_cnn_policy`
+- `CNN-based -> intent-conditioned dataset (recommended)`: task-conditioned recording for `intent_cnn_policy` and `act_intent_policy`
 
 The older no-language loop CNN path still exists, but it is secondary.
 
@@ -32,7 +32,7 @@ python -m client
 After launch:
 
 - choose `VLA-based` for the LeRobot / SmolVLA data path
-- choose `CNN-based -> intent-conditioned (recommended)` for the Intent-CNN path
+- choose `CNN-based -> intent-conditioned dataset (recommended)` for the Intent-CNN or ACT-Intent path
 
 ## Controls
 
@@ -154,9 +154,9 @@ If you want different state behavior:
 - `--state-source zeros`: use a zero vector for every frame
 - `--state-source none`: export without `observation.state`
 
-## Train the Intent-CNN Baseline
+## Train the Intent-CNN or ACT-Intent Baseline
 
-Intent-CNN data is intentionally separate from VLA data:
+The task-conditioned CNN dataset is intentionally separate from VLA data:
 
 ```text
 data/turbopi_intent_cnn/
@@ -194,6 +194,31 @@ python -m intent_cnn_policy.drive \
 ```
 
 If you trained on a custom task, that exact string becomes a valid inference label for that checkpoint.
+
+Train ACT-Intent from the same dataset:
+
+```bash
+python -m act_intent_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --run-dir runs/act_intent_v1
+```
+
+Evaluate:
+
+```bash
+python -m act_intent_policy.eval \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --checkpoint <RUN_DIR>/checkpoints/best.pt
+```
+
+Drive:
+
+```bash
+python -m act_intent_policy.drive \
+  --robot-ip <ROBOT_IP> \
+  --checkpoint <RUN_DIR>/checkpoints/best.pt \
+  --task "go right"
+```
 
 ## Inspect Recorded Actions
 

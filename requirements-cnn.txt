@@ -1,4 +1,4 @@
-# Extra dependencies for CNN training and inference
+# Extra dependencies for Intent-CNN and ACT-Intent training and inference
 torch
 torchvision
 tqdm>=4.66

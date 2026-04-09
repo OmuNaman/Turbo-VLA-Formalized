@@ -94,6 +94,42 @@ Fixes:
 - inspect the checkpoint metadata or training summary to confirm the saved task vocabulary
 - retrain if you need a newly added custom task to be supported
 
+## `act_intent_policy.drive` says the task is unknown
+
+That uses the same closed-set task vocabulary idea as `intent_cnn_policy`.
+
+Fixes:
+
+- pass a task string that really appears in the ACT checkpoint vocabulary
+- inspect the ACT run's `training_summary.json` or checkpoint metadata
+- retrain if you need support for a newly added custom task
+
+## ACT-Intent training is slow or runs out of memory
+
+Reduce one or more of these:
+
+- `--batch-size`
+- `--chunk-size`
+- `--d-model`
+- `--latent-dim`
+
+The ACT-style model is intentionally heavier than the tiny Intent-CNN baseline.
+
+## ACT-Intent drives, but the robot reacts sluggishly
+
+Common causes:
+
+- smoothing is too high
+- `--reuse-action-queue` is forcing open-loop chunk execution
+- motion caps are too low
+
+Fixes:
+
+- keep the default replan-every-step behavior first
+- avoid `--reuse-action-queue` until the model is already behaving well
+- reduce `--smoothing`
+- increase `--vx-cap` or `--omega-cap` if the normalized predictions look reasonable but the robot barely moves
+
 ## LeRobot export fails
 
 Check these common causes:

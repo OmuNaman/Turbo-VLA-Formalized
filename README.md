@@ -2,10 +2,11 @@
 
 TurboPi VLA Formalized is a student-friendly recording, training, export, and inference stack for the TurboPi Advanced Kit.
 
-The repo is built around two main workflows:
+The repo is built around two main student workflows plus one experimental chunked-policy path:
 
 - `Intent-CNN`: a lightweight task-conditioned CNN that learns from camera frames plus a saved task label
 - `SmolVLA`: a LeRobot-compatible workflow that exports recorded episodes and drives the robot with a fine-tuned SmolVLA checkpoint
+- `ACT-Intent` (experimental): a chunked action-transformer style policy that reuses the same task-conditioned recording dataset as Intent-CNN
 
 The recording client keeps the familiar built-in task list, but now also includes a `Custom task...` option so students can add one-off task prompts during collection without changing code first.
 
@@ -14,6 +15,7 @@ The recording client keeps the familiar built-in task list, but now also include
 - `robot_server/`: HTTP server for camera, velocity, and health endpoints on the TurboPi
 - `client/`: laptop-side launcher, teleop loop, and recording sessions
 - `intent_cnn_policy/`: train, evaluate, and drive the task-conditioned CNN
+- `act_intent_policy/`: experimental ACT-style chunked task-conditioned policy
 - `smolvla_policy/`: TurboPi inference adapter for fine-tuned SmolVLA checkpoints
 - `storage/`: raw backup writer, accepted-episode writer, and LeRobot exporter
 - `scripts/export_lerobot.py`: export accepted episodes into a LeRobot dataset
@@ -111,7 +113,7 @@ The launcher offers:
 
 Inside `CNN-based`, the recommended branch is:
 
-- `intent-conditioned (recommended)`
+- `intent-conditioned dataset (recommended)`
 
 The older `no-language loop mode (legacy)` path still exists, but it is no longer the primary student workflow.
 
@@ -172,7 +174,7 @@ Then choose:
 
 ```text
 CNN-based
--> intent-conditioned (recommended)
+-> intent-conditioned dataset (recommended)
 ```
 
 Train:
@@ -204,6 +206,60 @@ Important limitation:
 
 - the intent-conditioned CNN is still a closed-set task-label model
 - it can drive only with task strings that were present in the training data for that checkpoint
+
+## ACT-Intent Workflow
+
+`ACT-Intent` is an experimental chunked-action policy for students who want something more expressive than the tiny Intent-CNN baseline without jumping all the way to SmolVLA.
+
+It reuses the exact same task-conditioned recording dataset:
+
+```text
+data/turbopi_intent_cnn/
+```
+
+Record data the same way:
+
+```bash
+python -m client.cli --robot-ip <ROBOT_IP>
+```
+
+Then choose:
+
+```text
+CNN-based
+-> intent-conditioned dataset (recommended)
+```
+
+Train:
+
+```bash
+python -m act_intent_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --run-dir runs/act_intent_v1
+```
+
+Evaluate:
+
+```bash
+python -m act_intent_policy.eval \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --checkpoint <RUN_DIR>/checkpoints/best.pt
+```
+
+Drive:
+
+```bash
+python -m act_intent_policy.drive \
+  --robot-ip <ROBOT_IP> \
+  --checkpoint <RUN_DIR>/checkpoints/best.pt \
+  --task "go left"
+```
+
+Important notes:
+
+- ACT-Intent is still closed-set with respect to task labels
+- by default the driver replans from the latest frame every step
+- `--reuse-action-queue` is available, but is usually worse for reactive path following
 
 ## SmolVLA Workflow
 
@@ -299,6 +355,7 @@ python scripts/inspect_episode.py --episodes-dir data/turbopi_nav/episodes
 - [Wi-Fi and SSH Guide](docs/wifi-and-ssh.md)
 - [Data Collection Guide](docs/data-collection.md)
 - [Intent-CNN Guide](docs/cnn.md)
+- [ACT-Intent Guide](docs/act.md)
 - [Troubleshooting](docs/troubleshooting.md)
 
 ## Repo Layout
@@ -307,6 +364,7 @@ python scripts/inspect_episode.py --episodes-dir data/turbopi_nav/episodes
 .
 |-- client/
 |-- intent_cnn_policy/
+|-- act_intent_policy/
 |-- smolvla_policy/
 |-- cnn_policy/              # legacy no-language loop CNN
 |-- loop_cnn/               # internal legacy implementation behind cnn_policy

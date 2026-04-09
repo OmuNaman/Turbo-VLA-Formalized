@@ -27,7 +27,7 @@ Important behavior:
 ```text
 python -m client.cli --robot-ip <ROBOT_IP>
   -> CNN-based
-  -> intent-conditioned (recommended)
+  -> intent-conditioned dataset (recommended)
 ```
 
 During recording, students can either:
@@ -36,6 +36,8 @@ During recording, students can either:
 - or choose `Custom task...` and type a new task string
 
 That typed task is saved like any other task and becomes part of the session vocabulary.
+
+The same recorded dataset can also train the experimental `act_intent_policy` chunked-action model. See [ACT-Intent Guide](act.md).
 
 ## Data Layout
 
@@ -179,6 +181,36 @@ python -m client.cli --robot-ip <ROBOT_IP>
 ```
 
 The legacy training/inference package is `cnn_policy/`. Its underlying implementation still lives in `loop_cnn/`, but `cnn_policy/` is the public compatibility wrapper.
+
+## ACT-Intent Experimental Alternative
+
+If you want a chunked action model that still uses the same task-conditioned dataset, the repo now also ships:
+
+```text
+act_intent_policy/
+```
+
+It differs from Intent-CNN in two main ways:
+
+- it predicts a short future chunk of normalized actions instead of one action
+- it uses a small ACT-style CVAE + transformer decoder rather than the tiny CNN head
+
+Quick start:
+
+```bash
+python -m act_intent_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --run-dir runs/act_intent_v1
+```
+
+```bash
+python -m act_intent_policy.drive \
+  --robot-ip <ROBOT_IP> \
+  --checkpoint <RUN_DIR>/checkpoints/best.pt \
+  --task "go left"
+```
+
+For the full ACT path, see [ACT-Intent Guide](act.md).
 
 ## Common Issues
 

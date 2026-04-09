@@ -31,7 +31,7 @@ def _run_cnn_dataset_recording(args: Namespace) -> None:
 
 
 def _run_cnn_language_recording(args: Namespace) -> None:
-    """Run the language-conditioned CNN recorder."""
+    """Run the task-conditioned recorder shared by Intent-CNN and ACT-Intent."""
     from config import RecordingConfig
 
     from .cnn_language_session import CNNLanguageSession
@@ -59,7 +59,7 @@ def run_from_args(args: Namespace, prompt_menu) -> None:
     if args.cnn_intent is None:
         selection = prompt_menu(
             "CNN Intent Options",
-            ["intent-conditioned (recommended)", "no-language loop mode (legacy)"],
+            ["intent-conditioned dataset (recommended)", "no-language loop mode (legacy)"],
         )
         if selection is None:
             return

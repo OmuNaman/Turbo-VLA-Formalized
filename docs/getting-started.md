@@ -3,6 +3,7 @@
 This guide gets a student from fresh clone to either:
 
 - a trained `intent_cnn_policy` checkpoint
+- a trained `act_intent_policy` checkpoint
 - or an exported LeRobot dataset ready for SmolVLA fine-tuning
 
 ## What You Need
@@ -57,9 +58,9 @@ bash scripts/deploy_server.sh deps
 3. Start the robot server.
 4. Optionally test teleop-only mode.
 5. Start the laptop launcher.
-6. Choose either the intent-conditioned CNN workflow or the VLA recording workflow.
+6. Choose either the task-conditioned CNN recording workflow or the VLA recording workflow.
 7. Record accepted episodes.
-8. Train `intent_cnn_policy` or export VLA episodes to LeRobot.
+8. Train `intent_cnn_policy`, train `act_intent_policy`, or export VLA episodes to LeRobot.
 
 ## Start the Robot Server
 
@@ -106,7 +107,7 @@ The launcher then offers:
 
 Inside `CNN-based`, choose:
 
-- `intent-conditioned (recommended)`
+- `intent-conditioned dataset (recommended)`
 
 ## Recording Tasks
 
@@ -187,6 +188,45 @@ Important:
 
 - the checkpoint only knows tasks that appeared in its training data
 - if you record custom tasks, those custom strings become valid inference labels for that checkpoint
+
+## Train the ACT-Intent Policy
+
+ACT-Intent is an experimental chunked-action alternative that reuses the same dataset as Intent-CNN:
+
+```bash
+pip install -r requirements-cnn.txt
+```
+
+Train:
+
+```bash
+python -m act_intent_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --run-dir runs/act_intent_v1
+```
+
+Evaluate:
+
+```bash
+python -m act_intent_policy.eval \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --checkpoint <RUN_DIR>/checkpoints/best.pt
+```
+
+Drive:
+
+```bash
+python -m act_intent_policy.drive \
+  --robot-ip <ROBOT_IP> \
+  --checkpoint <RUN_DIR>/checkpoints/best.pt \
+  --task "go left"
+```
+
+Important:
+
+- it still uses the saved task vocabulary from the training data
+- by default the driver replans every frame instead of consuming the full predicted chunk open-loop
+- it is more experimental than the standard Intent-CNN path
 
 ## Export to LeRobot
 
