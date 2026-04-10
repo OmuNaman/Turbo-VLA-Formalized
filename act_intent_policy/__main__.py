@@ -12,6 +12,7 @@ def main() -> None:
             TurboPi ACT-Intent policy package
 
             Use one of:
+              python -m act_intent_policy.cache --help
               python -m act_intent_policy.train --help
               python -m act_intent_policy.eval --help
               python -m act_intent_policy.drive --help

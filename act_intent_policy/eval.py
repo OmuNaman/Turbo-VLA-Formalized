@@ -13,7 +13,7 @@ from intent_cnn_policy.dataset import discover_intent_episodes, discover_task_na
 from . import DEFAULT_DATA_ROOT
 from .dataset import ActEpisodeDataset
 from .model import load_checkpoint
-from .train import evaluate_model, resolve_device
+from .train import evaluate_model, resolve_amp_enabled, resolve_device
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,6 +85,7 @@ def main() -> None:
         loader,
         device=device,
         huber_delta=huber_delta,
+        amp_enabled=resolve_amp_enabled(device, None),
         show_progress=False,
         epoch=1,
         epochs=1,

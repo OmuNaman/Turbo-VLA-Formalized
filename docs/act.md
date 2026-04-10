@@ -91,6 +91,71 @@ python -m act_intent_policy.train \
   --latent-dim 32
 ```
 
+## Fast Cache Workflow
+
+The recommended ACT path on strong GPUs is:
+
+1. build the ACT cache once
+2. train from that cache repeatedly
+
+Why:
+
+- raw ACT training still decodes MP4s and does CPU image work
+- the cache path stores prebuilt frame-history stacks and chunk targets
+- training then spends its time moving packed arrays to GPU instead of rebuilding samples in Python
+
+Build the cache:
+
+```bash
+python -m act_intent_policy.cache \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --cache-dir data/turbopi_intent_cnn/act_cache_w160_h120_hist3_chunk8
+```
+
+Train from cache:
+
+```bash
+python -m act_intent_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --cache-dir data/turbopi_intent_cnn/act_cache_w160_h120_hist3_chunk8 \
+  --cache-mode require \
+  --run-dir runs/act_intent_v1 \
+  --device cuda \
+  --batch-size 128 \
+  --num-workers 8
+```
+
+Or build/reuse the cache automatically from the train command:
+
+```bash
+python -m act_intent_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --cache-mode build \
+  --run-dir runs/act_intent_v1 \
+  --device cuda \
+  --batch-size 128 \
+  --num-workers 8
+```
+
+Useful fast-path flags:
+
+- `--cache-mode build`: create or reuse a compatible cache automatically
+- `--cache-mode require`: fail fast unless a compatible cache already exists
+- `--cache-dir <DIR>`: choose where the reusable cache lives
+- `--amp` / `--no-amp`: mixed precision is enabled by default on CUDA
+- `--prefetch-factor <N>`: adjust worker prefetching for cached training
+- `--compile`: opt into `torch.compile` on CUDA when supported
+
+The train logs now report:
+
+- data source: raw vs cache
+- AMP on/off
+- samples/sec and batches/sec
+- average step/data/compute time
+- peak GPU allocated/reserved memory
+
+If `data_ms` is larger than `compute_ms`, the run is still data-bound.
+
 ## Evaluation
 
 ```bash

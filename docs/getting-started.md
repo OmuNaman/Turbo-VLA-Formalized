@@ -205,6 +205,23 @@ python -m act_intent_policy.train \
   --run-dir runs/act_intent_v1
 ```
 
+Recommended cloud-GPU path:
+
+```bash
+python -m act_intent_policy.cache \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --cache-dir data/turbopi_intent_cnn/act_cache_w160_h120_hist3_chunk8
+
+python -m act_intent_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --cache-dir data/turbopi_intent_cnn/act_cache_w160_h120_hist3_chunk8 \
+  --cache-mode require \
+  --run-dir runs/act_intent_v1 \
+  --device cuda \
+  --batch-size 128 \
+  --num-workers 8
+```
+
 Evaluate:
 
 ```bash

@@ -238,6 +238,23 @@ python -m act_intent_policy.train \
   --run-dir runs/act_intent_v1
 ```
 
+Recommended fast path for cloud GPUs:
+
+```bash
+python -m act_intent_policy.cache \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --cache-dir data/turbopi_intent_cnn/act_cache_w160_h120_hist3_chunk8
+
+python -m act_intent_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --cache-dir data/turbopi_intent_cnn/act_cache_w160_h120_hist3_chunk8 \
+  --cache-mode require \
+  --run-dir runs/act_intent_v1 \
+  --device cuda \
+  --batch-size 128 \
+  --num-workers 8
+```
+
 Evaluate:
 
 ```bash
@@ -260,6 +277,7 @@ Important notes:
 - ACT-Intent is still closed-set with respect to task labels
 - by default the driver replans from the latest frame every step
 - `--reuse-action-queue` is available, but is usually worse for reactive path following
+- raw ACT training works, but the cache-backed path is much faster on cloud GPUs because it avoids repeated MP4 decode and per-sample PIL transforms during training
 
 ## SmolVLA Workflow
 

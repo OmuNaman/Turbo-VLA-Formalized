@@ -106,14 +106,38 @@ Fixes:
 
 ## ACT-Intent training is slow or runs out of memory
 
-Reduce one or more of these:
+For cloud GPUs, prefer the cache-backed path first:
 
-- `--batch-size`
+```bash
+python -m act_intent_policy.cache \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --cache-dir data/turbopi_intent_cnn/act_cache_w160_h120_hist3_chunk8
+
+python -m act_intent_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --cache-dir data/turbopi_intent_cnn/act_cache_w160_h120_hist3_chunk8 \
+  --cache-mode require \
+  --device cuda \
+  --batch-size 128 \
+  --num-workers 8
+```
+
+If it is still slow, adjust one or more of these:
+
+- switch from raw training to `--cache-mode build` or `--cache-mode require`
+- increase `--batch-size` on strong GPUs instead of keeping many tiny steps
+- increase `--num-workers`
+- reduce `--batch-size` only if you actually hit GPU memory limits
 - `--chunk-size`
 - `--d-model`
 - `--latent-dim`
 
-The ACT-style model is intentionally heavier than the tiny Intent-CNN baseline.
+Read the train log too:
+
+- if `data_ms > compute_ms`, the run is still input-pipeline bound
+- if GPU memory is tiny and samples/sec are low, the GPU is waiting for data
+
+The ACT-style model is still heavier than the tiny Intent-CNN baseline, but the cache path should be much faster than raw MP4 training.
 
 ## ACT-Intent drives, but the robot reacts sluggishly
 

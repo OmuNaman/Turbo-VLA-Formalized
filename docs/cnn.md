@@ -203,6 +203,18 @@ python -m act_intent_policy.train \
   --run-dir runs/act_intent_v1
 ```
 
+Fast path for cloud GPUs:
+
+```bash
+python -m act_intent_policy.train \
+  --episodes-dir data/turbopi_intent_cnn/episodes \
+  --cache-mode build \
+  --run-dir runs/act_intent_v1 \
+  --device cuda \
+  --batch-size 128 \
+  --num-workers 8
+```
+
 ```bash
 python -m act_intent_policy.drive \
   --robot-ip <ROBOT_IP> \
