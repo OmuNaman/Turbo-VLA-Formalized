@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 from collections import OrderedDict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as TF
+from tqdm.auto import tqdm
 
 try:
     import av
@@ -229,19 +232,76 @@ class _EpisodeCache:
             self._actions.popitem(last=False)
         return frames, actions
 
+    def put(self, record: EpisodeRecord, frames: list[np.ndarray], actions: np.ndarray) -> None:
+        """Insert preloaded episode data into the cache."""
+        key = record.episode_dir
+        self._frames[key] = frames
+        self._actions[key] = actions
+        self._frames.move_to_end(key)
+        self._actions.move_to_end(key)
+        if len(self._frames) > self.max_items:
+            self._frames.popitem(last=False)
+            self._actions.popitem(last=False)
+
     def _load_frames(self, video_path: Path) -> list[np.ndarray]:
-        width, height = self.image_size
-        decoded: list[np.ndarray] = []
-        with av.open(str(video_path)) as container:
-            for frame in container.decode(video=0):
+        return load_episode_frames(video_path, image_size=self.image_size)
+
+    def _load_actions(self, parquet_path: Path) -> np.ndarray:
+        return load_episode_actions(parquet_path)
+
+
+def load_episode_frames(video_path: Path, *, image_size: tuple[int, int]) -> list[np.ndarray]:
+    """Decode and resize one episode video into RGB uint8 frames."""
+    width, height = image_size
+    decoded: list[np.ndarray] = []
+    with av.open(str(video_path)) as container:
+        for frame in container.decode(video=0):
+            try:
+                frame = frame.reformat(width=width, height=height, format="rgb24")
+                decoded.append(np.asarray(frame.to_ndarray(), dtype=np.uint8))
+            except Exception:
                 image = Image.fromarray(frame.to_ndarray(format="rgb24"))
                 image = image.resize((width, height), Image.Resampling.BILINEAR)
                 decoded.append(np.asarray(image, dtype=np.uint8))
-        return decoded
+    return decoded
 
-    def _load_actions(self, parquet_path: Path) -> np.ndarray:
-        df = pd.read_parquet(parquet_path)
-        return np.asarray(df["action"].tolist(), dtype=np.float32)
+
+def load_episode_actions(parquet_path: Path) -> np.ndarray:
+    """Read normalized action vectors from one accepted episode parquet."""
+    df = pd.read_parquet(parquet_path, columns=["action"])
+    return np.asarray(df["action"].tolist(), dtype=np.float32)
+
+
+def _default_preload_workers() -> int:
+    cpu_count = os.cpu_count() or 1
+    return max(1, min(8, cpu_count))
+
+
+def _prepare_preloaded_episode(
+    *,
+    episode_dir: str,
+    session_name: str,
+    num_frames: int,
+    task: str,
+    task_index_hint: int | None,
+    image_width: int,
+    image_height: int,
+) -> tuple[EpisodeRecord, list[np.ndarray], np.ndarray]:
+    """Decode one episode for parallel preload."""
+    record = EpisodeRecord(
+        episode_dir=Path(episode_dir),
+        session_name=session_name,
+        num_frames=int(num_frames),
+        task=task,
+        task_index_hint=task_index_hint,
+    )
+    frames = load_episode_frames(record.episode_dir / "video.mp4", image_size=(image_width, image_height))
+    actions = load_episode_actions(record.episode_dir / "data.parquet")
+    if len(frames) != len(actions):
+        raise ValueError(
+            f"Episode {record.episode_dir} has {len(frames)} decoded frames but {len(actions)} action rows."
+        )
+    return record, frames, actions
 
 
 class IntentEpisodeDataset(Dataset):
@@ -379,10 +439,60 @@ class IntentEpisodeDataset(Dataset):
         width, height = self.image_size
         return self.total_frames * width * height * 3
 
-    def preload_all(self) -> None:
+    def preload_all(
+        self,
+        *,
+        show_progress: bool = False,
+        desc: str = "Decode episodes",
+        workers: int | None = None,
+    ) -> None:
         """Decode and cache every episode once up front."""
-        for record in self.records:
-            self.cache.get(record)
+        if not self.records:
+            return
+
+        resolved_workers = _default_preload_workers() if workers is None else max(1, int(workers))
+        iterator = None
+        progress = None
+        if show_progress:
+            progress = tqdm(
+                total=len(self.records),
+                desc=desc,
+                unit="episode",
+                leave=False,
+                dynamic_ncols=True,
+            )
+
+        try:
+            if resolved_workers <= 1 or len(self.records) <= 1:
+                iterator = self.records
+                for record in iterator:
+                    self.cache.get(record)
+                    if progress is not None:
+                        progress.update(1)
+                return
+
+            payloads = [
+                {
+                    "episode_dir": str(record.episode_dir),
+                    "session_name": record.session_name,
+                    "num_frames": int(record.num_frames),
+                    "task": record.task,
+                    "task_index_hint": record.task_index_hint,
+                    "image_width": int(self.image_size[0]),
+                    "image_height": int(self.image_size[1]),
+                }
+                for record in self.records
+            ]
+            with ProcessPoolExecutor(max_workers=resolved_workers) as executor:
+                futures = [executor.submit(_prepare_preloaded_episode, **payload) for payload in payloads]
+                for future in as_completed(futures):
+                    record, frames, actions = future.result()
+                    self.cache.put(record, frames, actions)
+                    if progress is not None:
+                        progress.update(1)
+        finally:
+            if progress is not None:
+                progress.close()
 
 
 def build_datasets(

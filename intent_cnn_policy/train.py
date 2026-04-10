@@ -89,6 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--preload-workers", type=int, default=None, help="Worker processes for upfront episode preload")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--frame-history", type=int, default=DEFAULT_FRAME_HISTORY)
     parser.add_argument("--image-width", type=int, default=DEFAULT_IMAGE_WIDTH)
@@ -96,6 +97,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-embedding-dim", type=int, default=32)
     parser.add_argument("--hidden-dim", type=int, default=64)
     parser.add_argument("--huber-delta", type=float, default=1.0)
+    parser.add_argument("--preload-all", action="store_true", help="Force preloading accepted episodes into RAM before training")
+    parser.add_argument("--preload-threshold-records", type=int, default=64, help="Auto-preload when train split has at most this many episodes")
+    parser.add_argument("--preload-threshold-frames", type=int, default=25000, help="Auto-preload when train split has at most this many frames")
     parser.add_argument(
         "--no-progress",
         action="store_true",
@@ -129,9 +133,14 @@ def build_loaders(
     seed: int,
     batch_size: int,
     num_workers: int,
+    preload_workers: int | None,
     frame_history: int,
     image_width: int,
     image_height: int,
+    preload_all: bool,
+    preload_threshold_records: int,
+    preload_threshold_frames: int,
+    show_progress: bool,
 ) -> tuple[DataLoader, DataLoader | None, list[str], list[str], list[str]]:
     train_dataset, val_dataset, task_names = build_datasets(
         episodes_dir=episodes_dir,
@@ -143,17 +152,29 @@ def build_loaders(
     if len(train_dataset) == 0:
         raise RuntimeError(f"No intent-conditioned CNN episodes found under {episodes_dir}")
 
-    preload_threshold_frames = 25000
-    preload_threshold_records = 64
-    if train_dataset.records and len(train_dataset.records) <= preload_threshold_records and train_dataset.total_frames <= preload_threshold_frames:
+    if train_dataset.records and (
+        preload_all
+        or (
+            len(train_dataset.records) <= preload_threshold_records
+            and train_dataset.total_frames <= preload_threshold_frames
+        )
+    ):
         estimated_gb = train_dataset.estimated_cache_bytes / (1024 ** 3)
         print(
             f"[train] Preloading {len(train_dataset.records)} train episodes into RAM "
             f"(~{estimated_gb:.2f} GB resized frames) to avoid repeated video decode."
         )
-        train_dataset.preload_all()
+        train_dataset.preload_all(
+            show_progress=show_progress,
+            desc="Decode train episodes",
+            workers=preload_workers,
+        )
         if len(val_dataset.records) > 0:
-            val_dataset.preload_all()
+            val_dataset.preload_all(
+                show_progress=show_progress,
+                desc="Decode val episodes",
+                workers=preload_workers,
+            )
 
     train_loader = DataLoader(
         train_dataset,
@@ -382,9 +403,14 @@ def main() -> None:
         seed=args.seed,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        preload_workers=args.preload_workers,
         frame_history=args.frame_history,
         image_width=args.image_width,
         image_height=args.image_height,
+        preload_all=args.preload_all,
+        preload_threshold_records=args.preload_threshold_records,
+        preload_threshold_frames=args.preload_threshold_frames,
+        show_progress=not args.no_progress,
     )
     train_dataset = train_loader.dataset
     val_dataset = None if val_loader is None else val_loader.dataset
