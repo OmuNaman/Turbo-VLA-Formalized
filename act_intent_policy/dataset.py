@@ -69,9 +69,14 @@ def load_episode_frames(video_path: Path, *, image_size: tuple[int, int]) -> lis
     decoded: list[np.ndarray] = []
     with av.open(str(video_path)) as container:
         for frame in container.decode(video=0):
-            image = Image.fromarray(frame.to_ndarray(format="rgb24"))
-            image = image.resize((width, height), Image.Resampling.BILINEAR)
-            decoded.append(np.asarray(image, dtype=np.uint8))
+            try:
+                resized = frame.reformat(width=width, height=height, format="rgb24")
+                decoded.append(np.asarray(resized.to_ndarray(), dtype=np.uint8))
+            except Exception:
+                # Fall back to PIL when a backend/codec cannot reformat directly.
+                image = Image.fromarray(frame.to_ndarray(format="rgb24"))
+                image = image.resize((width, height), Image.Resampling.BILINEAR)
+                decoded.append(np.asarray(image, dtype=np.uint8))
     return decoded
 
 

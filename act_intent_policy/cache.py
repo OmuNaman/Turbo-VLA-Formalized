@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import gc
 import json
 import shutil
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,6 +42,72 @@ from .dataset import (
     load_episode_frames,
     validate_act_cache_manifest,
 )
+
+
+def _default_cache_workers() -> int:
+    cpu_count = os.cpu_count() or 1
+    return max(1, min(8, cpu_count))
+
+
+def _prepare_cached_episode(
+    *,
+    episode_index: int,
+    episode_dir: str,
+    session_name: str,
+    num_frames: int,
+    task: str,
+    task_index: int,
+    image_width: int,
+    image_height: int,
+    frame_history: int,
+    chunk_size: int,
+    task_names: list[str],
+    task_counts: dict[str, int],
+) -> dict[str, object]:
+    """Decode and precompute all ACT samples for one episode."""
+    episode_path = Path(episode_dir)
+    frames = load_episode_frames(episode_path / "video.mp4", image_size=(image_width, image_height))
+    actions = load_episode_actions(episode_path / "data.parquet")
+    if len(frames) != len(actions):
+        raise ValueError(f"Episode {episode_path} has {len(frames)} frames but {len(actions)} actions.")
+
+    frame_chw = np.stack([frame.transpose(2, 0, 1) for frame in frames], axis=0)
+    sample_count = len(actions)
+    action_dim = actions.shape[1] if actions.ndim == 2 and len(actions) > 0 else 3
+
+    images = np.empty((sample_count, frame_history * 3, image_height, image_width), dtype=np.uint8)
+    action_chunk = np.empty((sample_count, chunk_size, action_dim), dtype=np.float32)
+    action_mask = np.empty((sample_count, chunk_size), dtype=np.float32)
+    first_action = np.empty((sample_count, action_dim), dtype=np.float32)
+    sample_weight = np.empty((sample_count,), dtype=np.float32)
+
+    for frame_idx, action in enumerate(actions):
+        frame_indices = [max(0, frame_idx - offset) for offset in reversed(range(frame_history))]
+        images[frame_idx] = frame_chw[frame_indices].reshape(frame_history * 3, image_height, image_width)
+        chunk, mask = build_action_chunk(actions, start_index=frame_idx, chunk_size=chunk_size)
+        action_chunk[frame_idx] = chunk
+        action_mask[frame_idx] = mask
+        first_action[frame_idx] = chunk[0]
+        sample_weight[frame_idx] = compute_sample_weight(
+            action,
+            task=task,
+            task_names=task_names,
+            task_counts=task_counts,
+        )
+
+    return {
+        "episode_index": episode_index,
+        "episode_dir": episode_dir,
+        "session_name": session_name,
+        "num_frames": num_frames,
+        "task": task,
+        "task_index": task_index,
+        "images": images,
+        "action_chunk": action_chunk,
+        "action_mask": action_mask,
+        "first_action": first_action,
+        "sample_weight": sample_weight,
+    }
 
 
 def default_cache_dir(
@@ -86,6 +154,7 @@ def build_cache(
     image_height: int = DEFAULT_IMAGE_HEIGHT,
     frame_history: int = DEFAULT_FRAME_HISTORY,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    workers: int | None = None,
     overwrite: bool = False,
     show_progress: bool = True,
 ) -> dict[str, object]:
@@ -98,6 +167,7 @@ def build_cache(
     task_names = discover_task_names(episodes_dir, records)
     if not task_names:
         raise RuntimeError(f"No task vocabulary discovered under {episodes_dir}")
+    workers = _default_cache_workers() if workers is None else max(1, int(workers))
 
     if cache_dir.exists():
         if not overwrite and cache_is_compatible(
@@ -171,55 +241,80 @@ def build_cache(
     )
 
     episode_manifest: list[dict[str, object]] = []
+    episode_offsets: list[int] = []
     cursor = 0
+    for record in records:
+        episode_offsets.append(cursor)
+        cursor += int(record.num_frames)
+
     started_at = time.perf_counter()
-    progress = records
+    progress = None
     if show_progress:
-        progress = tqdm(records, total=len(records), desc="Build ACT cache", unit="episode", dynamic_ncols=True)
+        progress = tqdm(total=len(records), desc="Build ACT cache", unit="episode", dynamic_ncols=True)
+
+    worker_payloads = [
+        {
+            "episode_index": episode_index,
+            "episode_dir": str(record.episode_dir),
+            "session_name": record.session_name,
+            "num_frames": int(record.num_frames),
+            "task": record.task,
+            "task_index": int(task_to_index[record.task]),
+            "image_width": int(image_width),
+            "image_height": int(image_height),
+            "frame_history": int(frame_history),
+            "chunk_size": int(chunk_size),
+            "task_names": task_names,
+            "task_counts": task_counts,
+        }
+        for episode_index, record in enumerate(records)
+    ]
+
+    def write_prepared_episode(prepared: dict[str, object]) -> None:
+        episode_index = int(prepared["episode_index"])
+        sample_start = episode_offsets[episode_index]
+        sample_count = int(prepared["num_frames"])
+        sample_end = sample_start + sample_count
+
+        images[sample_start:sample_end] = prepared["images"]
+        task_index[sample_start:sample_end] = int(prepared["task_index"])
+        action_chunk[sample_start:sample_end] = prepared["action_chunk"]
+        action_mask[sample_start:sample_end] = prepared["action_mask"]
+        first_action[sample_start:sample_end] = prepared["first_action"]
+        sample_weight[sample_start:sample_end] = prepared["sample_weight"]
+        sample_episode_index[sample_start:sample_end] = episode_index
+
+        episode_manifest.append(
+            {
+                "episode_index": episode_index,
+                "episode_dir": str(prepared["episode_dir"]),
+                "session_name": str(prepared["session_name"]),
+                "num_frames": sample_count,
+                "task": str(prepared["task"]),
+                "task_index": int(prepared["task_index"]),
+                "sample_start": sample_start,
+                "sample_count": sample_count,
+            }
+        )
 
     try:
-        for episode_index, record in enumerate(progress):
-            frames = load_episode_frames(record.episode_dir / "video.mp4", image_size=(image_width, image_height))
-            actions = load_episode_actions(record.episode_dir / "data.parquet")
-            if len(frames) != len(actions):
-                raise ValueError(
-                    f"Episode {record.episode_dir} has {len(frames)} frames but {len(actions)} actions."
-                )
-
-            frame_chw = np.stack([frame.transpose(2, 0, 1) for frame in frames], axis=0)
-            sample_start = cursor
-            for frame_idx, action in enumerate(actions):
-                frame_indices = [max(0, frame_idx - offset) for offset in reversed(range(frame_history))]
-                images[cursor] = frame_chw[frame_indices].reshape(frame_history * 3, image_height, image_width)
-                task_index[cursor] = task_to_index[record.task]
-                chunk, mask = build_action_chunk(actions, start_index=frame_idx, chunk_size=chunk_size)
-                action_chunk[cursor] = chunk
-                action_mask[cursor] = mask
-                first_action[cursor] = chunk[0]
-                sample_weight[cursor] = compute_sample_weight(
-                    action,
-                    task=record.task,
-                    task_names=task_names,
-                    task_counts=task_counts,
-                )
-                sample_episode_index[cursor] = episode_index
-                cursor += 1
-
-            episode_manifest.append(
-                {
-                    "episode_index": episode_index,
-                    "episode_dir": str(record.episode_dir),
-                    "session_name": record.session_name,
-                    "num_frames": int(record.num_frames),
-                    "task": record.task,
-                    "task_index": int(task_to_index[record.task]),
-                    "sample_start": sample_start,
-                    "sample_count": int(record.num_frames),
-                }
-            )
+        if workers <= 1 or len(worker_payloads) <= 1:
+            for payload in worker_payloads:
+                write_prepared_episode(_prepare_cached_episode(**payload))
+                if progress is not None:
+                    progress.update(1)
+        else:
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                futures = [executor.submit(_prepare_cached_episode, **payload) for payload in worker_payloads]
+                for future in as_completed(futures):
+                    write_prepared_episode(future.result())
+                    if progress is not None:
+                        progress.update(1)
     finally:
-        if show_progress and hasattr(progress, "close"):
+        if progress is not None:
             progress.close()
+
+    episode_manifest.sort(key=lambda item: int(item["episode_index"]))
 
     for array in (images, task_index, action_chunk, action_mask, first_action, sample_weight, sample_episode_index):
         array.flush()
@@ -248,6 +343,7 @@ def build_cache(
         "action_dim": int(action_dim),
         "num_samples": int(total_samples),
         "num_episodes": int(len(records)),
+        "build_workers": int(workers),
         "task_names": task_names,
         "episodes": episode_manifest,
         "total_cache_bytes": int(cache_bytes),
@@ -262,7 +358,8 @@ def build_cache(
 
     print(
         f"[cache] Wrote {total_samples} samples from {len(records)} episodes to {cache_dir} "
-        f"({cache_bytes / (1024 ** 3):.2f} GB, {total_samples / elapsed:.1f} samples/s, {elapsed:.1f}s)."
+        f"({cache_bytes / (1024 ** 3):.2f} GB, {total_samples / elapsed:.1f} samples/s, {elapsed:.1f}s, "
+        f"{workers} worker{'s' if workers != 1 else ''})."
     )
     return manifest
 
@@ -275,6 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--image-height", type=int, default=DEFAULT_IMAGE_HEIGHT)
     parser.add_argument("--frame-history", type=int, default=DEFAULT_FRAME_HISTORY)
     parser.add_argument("--chunk-size", type=int, default=DEFAULT_CHUNK_SIZE)
+    parser.add_argument("--workers", type=int, default=_default_cache_workers())
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--no-progress", action="store_true")
     return parser
@@ -297,6 +395,7 @@ def main() -> None:
         image_height=args.image_height,
         frame_history=args.frame_history,
         chunk_size=args.chunk_size,
+        workers=args.workers,
         overwrite=args.overwrite,
         show_progress=not args.no_progress,
     )

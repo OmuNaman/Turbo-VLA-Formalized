@@ -151,6 +151,7 @@ class ActCacheTests(unittest.TestCase):
                 image_height=24,
                 frame_history=3,
                 chunk_size=4,
+                workers=1,
                 show_progress=False,
             )
 
@@ -199,6 +200,7 @@ class ActCacheTests(unittest.TestCase):
                 image_height=24,
                 frame_history=3,
                 chunk_size=4,
+                workers=1,
                 show_progress=False,
             )
 
@@ -214,6 +216,7 @@ class ActCacheTests(unittest.TestCase):
                 chunk_size=4,
                 cache_size=1,
                 cache_dir=cache_dir,
+                cache_workers=1,
                 cache_mode="require",
                 preload_all=False,
                 preload_threshold_records=64,
@@ -245,6 +248,7 @@ class ActCacheTests(unittest.TestCase):
                 image_height=24,
                 frame_history=3,
                 chunk_size=4,
+                workers=1,
                 show_progress=False,
             )
 
@@ -260,6 +264,7 @@ class ActCacheTests(unittest.TestCase):
                 chunk_size=4,
                 cache_size=1,
                 cache_dir=cache_dir,
+                cache_workers=1,
                 cache_mode="require",
                 preload_all=False,
                 preload_threshold_records=64,

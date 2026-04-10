@@ -109,7 +109,8 @@ Build the cache:
 ```bash
 python -m act_intent_policy.cache \
   --episodes-dir data/turbopi_intent_cnn/episodes \
-  --cache-dir data/turbopi_intent_cnn/act_cache_w160_h120_hist3_chunk8
+  --cache-dir data/turbopi_intent_cnn/act_cache_w160_h120_hist3_chunk8 \
+  --workers 8
 ```
 
 Train from cache:
@@ -142,6 +143,7 @@ Useful fast-path flags:
 - `--cache-mode build`: create or reuse a compatible cache automatically
 - `--cache-mode require`: fail fast unless a compatible cache already exists
 - `--cache-dir <DIR>`: choose where the reusable cache lives
+- `--cache-workers <N>` / `cache.py --workers <N>`: parallelize cache build across episodes
 - `--amp` / `--no-amp`: mixed precision is enabled by default on CUDA
 - `--prefetch-factor <N>`: adjust worker prefetching for cached training
 - `--compile`: opt into `torch.compile` on CUDA when supported

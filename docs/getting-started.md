@@ -210,7 +210,8 @@ Recommended cloud-GPU path:
 ```bash
 python -m act_intent_policy.cache \
   --episodes-dir data/turbopi_intent_cnn/episodes \
-  --cache-dir data/turbopi_intent_cnn/act_cache_w160_h120_hist3_chunk8
+  --cache-dir data/turbopi_intent_cnn/act_cache_w160_h120_hist3_chunk8 \
+  --workers 8
 
 python -m act_intent_policy.train \
   --episodes-dir data/turbopi_intent_cnn/episodes \

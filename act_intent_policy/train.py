@@ -110,6 +110,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for the reusable ACT sample cache; defaults beside the dataset root",
     )
     parser.add_argument(
+        "--cache-workers",
+        type=int,
+        default=None,
+        help="Worker processes for ACT cache building; defaults to an automatic CPU-based value",
+    )
+    parser.add_argument(
         "--cache-mode",
         choices=("off", "build", "require"),
         default="off",
@@ -173,6 +179,7 @@ def build_loaders(
     chunk_size: int,
     cache_size: int,
     cache_dir: Path | None,
+    cache_workers: int | None = None,
     cache_mode: str,
     preload_all: bool,
     preload_threshold_records: int,
@@ -209,6 +216,7 @@ def build_loaders(
                     image_height=image_height,
                     frame_history=frame_history,
                     chunk_size=chunk_size,
+                    workers=cache_workers,
                     overwrite=resolved_cache_dir.exists(),
                     show_progress=show_progress,
                 )
@@ -683,6 +691,7 @@ def main() -> None:
         chunk_size=args.chunk_size,
         cache_size=args.cache_size,
         cache_dir=requested_cache_dir,
+        cache_workers=args.cache_workers,
         cache_mode=args.cache_mode,
         preload_all=args.preload_all,
         preload_threshold_records=args.preload_threshold_records,
