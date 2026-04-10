@@ -92,6 +92,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--kl-weight", type=float, default=1e-3)
     parser.add_argument("--kl-warmup-epochs", type=int, default=5)
     parser.add_argument("--grad-clip", type=float, default=1.0)
+    parser.add_argument("--cache-size", type=int, default=4, help="Per-worker decoded episode cache size")
+    parser.add_argument(
+        "--preload-all",
+        action="store_true",
+        help="Force preloading all resized frames into RAM before training",
+    )
+    parser.add_argument(
+        "--preload-threshold-records",
+        type=int,
+        default=64,
+        help="Auto-preload when the train split has at most this many episodes",
+    )
+    parser.add_argument(
+        "--preload-threshold-frames",
+        type=int,
+        default=25000,
+        help="Auto-preload when the train split has at most this many frames",
+    )
     parser.add_argument("--no-progress", action="store_true", help="Disable tqdm progress bars")
     return parser
 
@@ -107,6 +125,10 @@ def build_loaders(
     image_width: int,
     image_height: int,
     chunk_size: int,
+    cache_size: int,
+    preload_all: bool,
+    preload_threshold_records: int,
+    preload_threshold_frames: int,
     show_progress: bool,
 ) -> tuple[DataLoader, DataLoader | None, list[str], list[str], list[str]]:
     train_dataset, val_dataset, task_names = build_datasets(
@@ -116,16 +138,20 @@ def build_loaders(
         chunk_size=chunk_size,
         val_ratio=val_ratio,
         seed=seed,
+        cache_size=cache_size,
     )
     if len(train_dataset) == 0:
         raise RuntimeError(f"No intent-conditioned episodes found under {episodes_dir}")
 
-    preload_threshold_frames = 25000
-    preload_threshold_records = 64
     if (
         train_dataset.records
-        and len(train_dataset.records) <= preload_threshold_records
-        and train_dataset.total_frames <= preload_threshold_frames
+        and (
+            preload_all
+            or (
+                len(train_dataset.records) <= preload_threshold_records
+                and train_dataset.total_frames <= preload_threshold_frames
+            )
+        )
     ):
         estimated_gb = train_dataset.estimated_cache_bytes / (1024 ** 3)
         print(
@@ -428,6 +454,10 @@ def main() -> None:
         image_width=args.image_width,
         image_height=args.image_height,
         chunk_size=args.chunk_size,
+        cache_size=args.cache_size,
+        preload_all=args.preload_all,
+        preload_threshold_records=args.preload_threshold_records,
+        preload_threshold_frames=args.preload_threshold_frames,
         show_progress=not args.no_progress,
     )
 

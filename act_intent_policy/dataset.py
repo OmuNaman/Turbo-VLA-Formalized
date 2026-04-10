@@ -278,6 +278,7 @@ def build_datasets(
     val_ratio: float = 0.2,
     seed: int | None = None,
     task_names: list[str] | None = None,
+    cache_size: int = 4,
 ) -> tuple[ActEpisodeDataset, ActEpisodeDataset, list[str]]:
     """Create train/val ACT-style datasets with a shared task vocabulary."""
     episodes_dir = Path(episodes_dir)
@@ -298,6 +299,7 @@ def build_datasets(
         history=history,
         chunk_size=chunk_size,
         augment=True,
+        cache_size=cache_size,
     )
     val_dataset = ActEpisodeDataset(
         val_records,
@@ -307,5 +309,6 @@ def build_datasets(
         history=history,
         chunk_size=chunk_size,
         augment=False,
+        cache_size=cache_size,
     )
     return train_dataset, val_dataset, task_names
