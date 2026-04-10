@@ -14,6 +14,7 @@ from PIL import Image
 from torchvision.transforms import functional as TF
 
 from client.robot_client import RobotClient
+from client.drive_trace import DriveTraceRecorder
 
 from .model import load_checkpoint
 from .train import resolve_device
@@ -42,6 +43,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-omega", type=float, default=0.0,
                         help="Minimum absolute omega command to send when omega is nonzero")
     parser.add_argument("--device", default="auto")
+    parser.add_argument("--trace-dir", default=None, help="Write a per-step drive trace to this directory")
+    parser.add_argument(
+        "--trace-save-frames",
+        action="store_true",
+        help="Save annotated camera frames alongside trace.jsonl",
+    )
+    parser.add_argument(
+        "--trace-frame-every",
+        type=int,
+        default=1,
+        help="When tracing frames, save every Nth control step",
+    )
+    parser.add_argument(
+        "--trace-max-steps",
+        type=int,
+        default=None,
+        help="Automatically stop after this many control steps",
+    )
     return parser
 
 
@@ -177,6 +196,12 @@ def main() -> None:
     print(f"  Task: {task_name} [{task_index}]")
     print(f"  Battery: {health.get('battery_mv', '?')}mV")
     print(f"  Camera: {'OK' if health.get('camera_ok') else 'FAIL'}")
+    if args.trace_dir:
+        print(f"  Trace: {args.trace_dir}")
+        if args.trace_save_frames:
+            print(f"  Trace frames: every {max(int(args.trace_frame_every), 1)} step(s)")
+        if args.trace_max_steps is not None:
+            print(f"  Trace max steps: {args.trace_max_steps}")
     print()
     print("  Press Ctrl+C to stop.")
     print()
@@ -184,6 +209,33 @@ def main() -> None:
     buffer: collections.deque[np.ndarray] = collections.deque(maxlen=frame_history)
     previous_action = np.zeros(3, dtype=np.float32)
     task_tensor = torch.tensor([task_index], dtype=torch.long, device=device)
+    trace = None
+    if args.trace_dir:
+        trace = DriveTraceRecorder(
+            Path(args.trace_dir),
+            save_frames=args.trace_save_frames,
+            frame_every=args.trace_frame_every,
+            metadata={
+                "policy": "intent_cnn",
+                "robot_url": robot_url,
+                "checkpoint": str(Path(args.checkpoint).resolve()),
+                "checkpoint_epoch": payload.get("epoch"),
+                "task_index": task_index,
+                "task_name": task_name,
+                "frame_history": frame_history,
+                "image_width": image_width,
+                "image_height": image_height,
+                "loop_hz": float(args.loop_hz),
+                "smoothing": float(args.smoothing),
+                "vx_cap": float(args.vx_cap),
+                "vy_cap": float(args.vy_cap),
+                "omega_cap": float(args.omega_cap),
+                "min_vx": float(args.min_vx),
+                "min_vy": float(args.min_vy),
+                "min_omega": float(args.min_omega),
+                "device": str(device),
+            },
+        )
 
     def safe_stop(*_args):
         try:
@@ -196,13 +248,14 @@ def main() -> None:
     signal.signal(signal.SIGTERM, safe_stop)
 
     try:
+        step_idx = 0
         first_frame, _, _ = client.get_frame_rgb()
         for _ in range(frame_history):
             buffer.append(first_frame.copy())
 
         while True:
             loop_start = time.monotonic()
-            frame, _, _ = client.get_frame_rgb()
+            frame, frame_timestamp, frame_index = client.get_frame_rgb()
             buffer.append(frame)
             if len(buffer) < frame_history:
                 time.sleep(period_s)
@@ -226,12 +279,59 @@ def main() -> None:
             )
             previous_action = smoothed
 
+            trace_payload = {
+                "step_idx": step_idx,
+                "policy": "intent_cnn",
+                "task_index": task_index,
+                "task_name": task_name,
+                "frame_index": int(frame_index),
+                "robot_timestamp": float(frame_timestamp),
+                "pred_norm": pred,
+                "smoothed_norm": smoothed,
+                "raw_action": raw_action,
+                "safe_action": safe_action,
+                "loop_period_s": float(period_s),
+            }
             try:
                 client.send_velocity(float(safe_action[0]), float(safe_action[1]), float(safe_action[2]))
+                trace_payload["send_ok"] = True
             except Exception as exc:
+                trace_payload["send_ok"] = False
+                trace_payload["send_error"] = str(exc)
+                if trace is not None:
+                    elapsed = time.monotonic() - loop_start
+                    trace_payload["loop_elapsed_ms"] = elapsed * 1000.0
+                    trace.record(
+                        step_idx=step_idx,
+                        frame=frame,
+                        payload=trace_payload,
+                        overlay_lines=[
+                            f"step={step_idx} task={task_name}",
+                            f"pred={pred[0]:+.2f}, {pred[1]:+.2f}, {pred[2]:+.2f}",
+                            f"smooth={smoothed[0]:+.2f}, {smoothed[1]:+.2f}, {smoothed[2]:+.2f}",
+                            f"cmd={safe_action[0]:+.2f}, {safe_action[1]:+.2f}, {safe_action[2]:+.2f}",
+                            f"frame={frame_index} send=error",
+                        ],
+                    )
                 print(f"\n  [WARN] Failed to send velocity command: {exc}")
                 client.stop()
                 break
+
+            elapsed = time.monotonic() - loop_start
+            trace_payload["loop_elapsed_ms"] = elapsed * 1000.0
+            if trace is not None:
+                trace.record(
+                    step_idx=step_idx,
+                    frame=frame,
+                    payload=trace_payload,
+                    overlay_lines=[
+                        f"step={step_idx} task={task_name}",
+                        f"pred={pred[0]:+.2f}, {pred[1]:+.2f}, {pred[2]:+.2f}",
+                        f"smooth={smoothed[0]:+.2f}, {smoothed[1]:+.2f}, {smoothed[2]:+.2f}",
+                        f"cmd={safe_action[0]:+.2f}, {safe_action[1]:+.2f}, {safe_action[2]:+.2f}",
+                        f"frame={frame_index} send=ok",
+                    ],
+                )
 
             print(
                 f"\r  task={task_index:02d} pred=[{pred[0]:5.2f},{pred[1]:5.2f},{pred[2]:5.2f}] "
@@ -240,8 +340,11 @@ def main() -> None:
                 flush=True,
             )
 
-            elapsed = time.monotonic() - loop_start
             sleep_for = period_s - elapsed
+            step_idx += 1
+            if args.trace_max_steps is not None and step_idx >= args.trace_max_steps:
+                print(f"\n  Reached trace max steps ({args.trace_max_steps}).")
+                break
             if sleep_for > 0:
                 time.sleep(sleep_for)
     except KeyboardInterrupt:
@@ -252,6 +355,8 @@ def main() -> None:
             client.stop()
         except Exception:
             pass
+        if trace is not None:
+            trace.close()
         print("  Intent CNN drive stopped.")
 
 

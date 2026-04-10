@@ -100,6 +100,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ffn-mult", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--huber-delta", type=float, default=0.25)
+    parser.add_argument(
+        "--first-action-weight",
+        type=float,
+        default=0.25,
+        help="Extra weight on the first action in each predicted chunk to better match drive-time usage",
+    )
     parser.add_argument("--kl-weight", type=float, default=1e-3)
     parser.add_argument("--kl-warmup-epochs", type=int, default=5)
     parser.add_argument("--grad-clip", type=float, default=1.0)
@@ -330,6 +336,17 @@ def compute_first_step_mae(pred: torch.Tensor, target: torch.Tensor) -> torch.Te
     return torch.mean(torch.abs(pred[:, 0, :] - target[:, 0, :]), dim=0)
 
 
+def first_action_huber_loss(
+    pred: torch.Tensor,
+    first_action: torch.Tensor,
+    *,
+    delta: float,
+) -> torch.Tensor:
+    """Huber loss on the first predicted action only."""
+    criterion = nn.HuberLoss(delta=delta, reduction="mean")
+    return criterion(pred[:, 0, :], first_action)
+
+
 def cosine_lr(base_lr: float, *, epoch: int, epochs: int, warmup_epochs: int = 3) -> float:
     """Warmup plus cosine decay learning-rate schedule."""
     if epoch <= warmup_epochs:
@@ -354,13 +371,14 @@ def move_batch_to_device(
     batch: dict[str, torch.Tensor | str],
     *,
     device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Move the tensor parts of one ACT batch to the requested device."""
     images = move_images_to_device(batch["image"], device)
     task_ids = batch["task_index"].to(device, non_blocking=device.type == "cuda")
     target = batch["action_chunk"].to(device, non_blocking=device.type == "cuda", dtype=torch.float32)
     mask = batch["action_mask"].to(device, non_blocking=device.type == "cuda", dtype=torch.float32)
-    return images, task_ids, target, mask
+    first_action = batch["first_action"].to(device, non_blocking=device.type == "cuda", dtype=torch.float32)
+    return images, task_ids, target, mask, first_action
 
 
 def epoch_timing_summary(
@@ -429,6 +447,7 @@ def evaluate_model(
     *,
     device: torch.device,
     huber_delta: float,
+    first_action_weight: float,
     amp_enabled: bool,
     show_progress: bool,
     epoch: int,
@@ -437,6 +456,8 @@ def evaluate_model(
     if loader is None:
         return {
             "loss": math.nan,
+            "objective_loss": math.nan,
+            "first_action_loss": math.nan,
             "chunk_mae": math.nan,
             "first_mae_vx": math.nan,
             "first_mae_vy": math.nan,
@@ -445,6 +466,8 @@ def evaluate_model(
 
     model.eval()
     total_loss = 0.0
+    total_objective = 0.0
+    total_first_action_loss = 0.0
     total_examples = 0
     total_valid_steps = 0.0
     total_chunk_abs = 0.0
@@ -464,13 +487,17 @@ def evaluate_model(
     try:
         with torch.no_grad():
             for batch in loader:
-                images, task_ids, target, mask = move_batch_to_device(batch, device=device)
+                images, task_ids, target, mask, first_action = move_batch_to_device(batch, device=device)
                 with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=amp_enabled):
                     pred = model(images, task_ids)
                     loss = masked_huber_loss(pred, target, mask, delta=huber_delta)
+                    first_loss = first_action_huber_loss(pred, first_action, delta=huber_delta)
+                    objective_loss = loss + first_action_weight * first_loss
 
                 batch_size = images.shape[0]
                 total_loss += float(loss.item()) * batch_size
+                total_objective += float(objective_loss.item()) * batch_size
+                total_first_action_loss += float(first_loss.item()) * batch_size
                 total_examples += batch_size
                 total_valid_steps += float(mask.sum().item())
                 total_chunk_abs += float((torch.abs(pred - target) * mask.unsqueeze(-1)).sum().item())
@@ -478,7 +505,7 @@ def evaluate_model(
 
                 if progress is not None:
                     progress.update(batch_size)
-                    progress.set_postfix(avg_loss=f"{total_loss / max(1, total_examples):.4f}")
+                    progress.set_postfix(avg_loss=f"{total_objective / max(1, total_examples):.4f}")
     finally:
         if progress is not None:
             progress.close()
@@ -486,6 +513,8 @@ def evaluate_model(
     if total_examples == 0:
         return {
             "loss": math.nan,
+            "objective_loss": math.nan,
+            "first_action_loss": math.nan,
             "chunk_mae": math.nan,
             "first_mae_vx": math.nan,
             "first_mae_vy": math.nan,
@@ -495,6 +524,8 @@ def evaluate_model(
     denom = max(total_valid_steps * target.shape[-1], 1.0)
     return {
         "loss": total_loss / total_examples,
+        "objective_loss": total_objective / total_examples,
+        "first_action_loss": total_first_action_loss / total_examples,
         "chunk_mae": total_chunk_abs / denom,
         "first_mae_vx": float(first_abs[0].item() / total_examples),
         "first_mae_vy": float(first_abs[1].item() / total_examples),
@@ -528,6 +559,7 @@ def train_epoch(
     scaler: torch.amp.GradScaler,
     device: torch.device,
     huber_delta: float,
+    first_action_weight: float,
     kl_scale: float,
     grad_clip: float,
     amp_enabled: bool,
@@ -539,7 +571,9 @@ def train_epoch(
 ) -> dict[str, float]:
     model.train()
     total_examples = 0
+    total_objective = 0.0
     total_recon = 0.0
+    total_first_action_loss = 0.0
     total_kl = 0.0
     total_chunk_abs = 0.0
     total_valid_steps = 0.0
@@ -566,14 +600,15 @@ def train_epoch(
     try:
         for steps, batch in enumerate(loader, start=1):
             total_data_seconds += time.perf_counter() - last_end
-            images, task_ids, target, mask = move_batch_to_device(batch, device=device)
+            images, task_ids, target, mask, first_action = move_batch_to_device(batch, device=device)
 
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type=device.type, dtype=autocast_dtype, enabled=amp_enabled):
                 pred, mu, logvar = model(images, task_ids, target, mask)
                 recon_loss = masked_huber_loss(pred, target, mask, delta=huber_delta)
+                first_loss = first_action_huber_loss(pred, first_action, delta=huber_delta)
                 kl_loss = kl_divergence(mu, logvar)
-                loss = recon_loss + kl_scale * kl_loss
+                loss = recon_loss + first_action_weight * first_loss + kl_scale * kl_loss
 
             if scaler.is_enabled():
                 scaler.scale(loss).backward()
@@ -588,7 +623,9 @@ def train_epoch(
 
             batch_size = images.shape[0]
             total_examples += batch_size
+            total_objective += float(loss.item()) * batch_size
             total_recon += float(recon_loss.item()) * batch_size
+            total_first_action_loss += float(first_loss.item()) * batch_size
             total_kl += float(kl_loss.item()) * batch_size
             total_valid_steps += float(mask.sum().item())
             total_chunk_abs += float((torch.abs(pred.detach() - target) * mask.unsqueeze(-1)).sum().item())
@@ -601,7 +638,9 @@ def train_epoch(
                     avg_data_ms = (total_data_seconds / steps) * 1000.0
                     avg_compute_ms = max((elapsed - total_data_seconds) / steps, 0.0) * 1000.0
                     postfix = {
+                        "obj": f"{total_objective / max(1, total_examples):.4f}",
                         "recon": f"{total_recon / max(1, total_examples):.4f}",
+                        "first": f"{total_first_action_loss / max(1, total_examples):.4f}",
                         "kl": f"{total_kl / max(1, total_examples):.4f}",
                         "lr": f"{lr:.2e}",
                         "sample_s": f"{total_examples / elapsed:.1f}",
@@ -628,7 +667,9 @@ def train_epoch(
     )
     denom = max(total_valid_steps * target.shape[-1], 1.0)
     return {
+        "objective_loss": total_objective / max(1, total_examples),
         "recon_loss": total_recon / max(1, total_examples),
+        "first_action_loss": total_first_action_loss / max(1, total_examples),
         "kl_loss": total_kl / max(1, total_examples),
         "chunk_mae": total_chunk_abs / denom,
         "first_mae_vx": float(first_abs[0].item() / max(1, total_examples)),
@@ -712,6 +753,7 @@ def main() -> None:
     print(f"[train] Data source: {data_source}")
     print(f"[train] AMP: {'on' if amp_enabled else 'off'}")
     print(f"[train] Batch size: {args.batch_size}")
+    print(f"[train] First-action weight: {args.first_action_weight:.3f}")
     if resolved_cache_dir is not None:
         print(f"[train] Cache dir: {resolved_cache_dir}")
     print(f"[train] Run base dir: {run_base_dir}")
@@ -760,6 +802,7 @@ def main() -> None:
         "dataset_root": str(episodes_dir),
         "run_dir": str(run_dir),
         "huber_delta": float(args.huber_delta),
+        "first_action_weight": float(args.first_action_weight),
         "kl_weight": float(args.kl_weight),
         "kl_warmup_epochs": int(args.kl_warmup_epochs),
         "data_source": data_source,
@@ -782,6 +825,7 @@ def main() -> None:
                 scaler=scaler,
                 device=device,
                 huber_delta=args.huber_delta,
+                first_action_weight=args.first_action_weight,
                 kl_scale=kl_scale,
                 grad_clip=args.grad_clip,
                 amp_enabled=amp_enabled,
@@ -796,19 +840,22 @@ def main() -> None:
                 val_loader,
                 device=device,
                 huber_delta=args.huber_delta,
+                first_action_weight=args.first_action_weight,
                 amp_enabled=amp_enabled,
                 show_progress=show_progress,
                 epoch=epoch,
                 epochs=args.epochs,
             )
 
-            metric = val_metrics["loss"]
+            metric = val_metrics["objective_loss"]
             if math.isnan(metric):
-                metric = train_metrics["recon_loss"]
+                metric = train_metrics["objective_loss"]
 
             epoch_metrics = {
                 "epoch": float(epoch),
+                "train_objective_loss": float(train_metrics["objective_loss"]),
                 "train_recon_loss": float(train_metrics["recon_loss"]),
+                "train_first_action_loss": float(train_metrics["first_action_loss"]),
                 "train_kl_loss": float(train_metrics["kl_loss"]),
                 "train_chunk_mae": float(train_metrics["chunk_mae"]),
                 "train_first_mae_vx": float(train_metrics["first_mae_vx"]),
@@ -822,6 +869,8 @@ def main() -> None:
                 "train_gpu_peak_allocated_gb": float(train_metrics["gpu_peak_allocated_gb"]),
                 "train_gpu_peak_reserved_gb": float(train_metrics["gpu_peak_reserved_gb"]),
                 "val_loss": float(val_metrics["loss"]),
+                "val_objective_loss": float(val_metrics["objective_loss"]),
+                "val_first_action_loss": float(val_metrics["first_action_loss"]),
                 "val_chunk_mae": float(val_metrics["chunk_mae"]),
                 "val_first_mae_vx": float(val_metrics["first_mae_vx"]),
                 "val_first_mae_vy": float(val_metrics["first_mae_vy"]),
@@ -869,9 +918,11 @@ def main() -> None:
             )
             print(
                 f"[train] epoch {epoch:03d} "
+                f"obj={train_metrics['objective_loss']:.4f} "
                 f"recon={train_metrics['recon_loss']:.4f} "
+                f"first={train_metrics['first_action_loss']:.4f} "
                 f"kl={train_metrics['kl_loss']:.4f} "
-                f"val={val_metrics['loss']:.4f} "
+                f"val_obj={val_metrics['objective_loss']:.4f} "
                 f"sample/s={train_metrics['samples_per_sec']:.1f} "
                 f"step_ms={train_metrics['avg_step_time_ms']:.1f} "
                 f"data_ms={train_metrics['avg_data_time_ms']:.1f} "
