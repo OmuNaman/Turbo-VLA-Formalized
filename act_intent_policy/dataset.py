@@ -12,6 +12,7 @@ import pandas as pd
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
+from tqdm.auto import tqdm
 from torchvision.transforms import InterpolationMode
 from torchvision.transforms import functional as TF
 
@@ -248,8 +249,23 @@ class ActEpisodeDataset(Dataset):
         width, height = self.image_size
         return self.total_frames * width * height * 3
 
-    def preload_all(self) -> None:
-        for record in self.records:
+    def preload_all(
+        self,
+        *,
+        show_progress: bool = True,
+        desc: str | None = None,
+    ) -> None:
+        records = self.records
+        if show_progress:
+            records = tqdm(
+                self.records,
+                total=len(self.records),
+                desc=desc or f"Preload {self.split}",
+                unit="episode",
+                dynamic_ncols=True,
+                leave=False,
+            )
+        for record in records:
             self.cache.get(record)
 
 

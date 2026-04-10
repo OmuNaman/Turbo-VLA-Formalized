@@ -107,6 +107,7 @@ def build_loaders(
     image_width: int,
     image_height: int,
     chunk_size: int,
+    show_progress: bool,
 ) -> tuple[DataLoader, DataLoader | None, list[str], list[str], list[str]]:
     train_dataset, val_dataset, task_names = build_datasets(
         episodes_dir=episodes_dir,
@@ -131,9 +132,9 @@ def build_loaders(
             f"[train] Preloading {len(train_dataset.records)} ACT train episodes into RAM "
             f"(~{estimated_gb:.2f} GB resized frames) to avoid repeated video decode."
         )
-        train_dataset.preload_all()
+        train_dataset.preload_all(show_progress=show_progress, desc="Decode train episodes")
         if len(val_dataset.records) > 0:
-            val_dataset.preload_all()
+            val_dataset.preload_all(show_progress=show_progress, desc="Decode val episodes")
 
     train_loader = DataLoader(
         train_dataset,
@@ -427,6 +428,7 @@ def main() -> None:
         image_width=args.image_width,
         image_height=args.image_height,
         chunk_size=args.chunk_size,
+        show_progress=not args.no_progress,
     )
 
     train_dataset = train_loader.dataset
