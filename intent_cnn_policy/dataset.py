@@ -450,6 +450,8 @@ class IntentEpisodeDataset(Dataset):
         if not self.records:
             return
 
+        # When we explicitly preload, keep every accepted episode resident.
+        self.cache.max_items = max(self.cache.max_items, len(self.records))
         resolved_workers = _default_preload_workers() if workers is None else max(1, int(workers))
         iterator = None
         progress = None
